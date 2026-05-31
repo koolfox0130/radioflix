@@ -41,7 +41,7 @@ function ProgramCard({
   showReason?: boolean;
 }) {
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl min-w-[165px] max-w-[165px] h-[145px] shrink-0 p-4 flex flex-col justify-between shadow-lg">
+    <div className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[170px] max-w-[170px] h-[150px] shrink-0 p-4 flex flex-col justify-between shadow-xl">
       <div>
         <div className="text-base font-bold leading-snug line-clamp-3">
           {program.title}
@@ -55,7 +55,7 @@ function ProgramCard({
       </div>
 
       <div>
-        <div className="text-xs text-zinc-400 truncate">
+        <div className="text-xs text-zinc-300 truncate">
           {program.network || "不明"}
         </div>
 
@@ -127,7 +127,7 @@ export default async function Home() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="sticky top-0 z-10 bg-black/90 backdrop-blur px-4 pt-5 pb-4">
+      <div className="sticky top-0 z-10 bg-black/90 backdrop-blur px-4 pt-5 pb-4 border-b border-zinc-900">
         <h1 className="text-3xl font-black tracking-tight">
           📻 RadioFlix
         </h1>
@@ -137,7 +137,7 @@ export default async function Home() {
         </p>
       </div>
 
-      <div className="px-4 pt-3 pb-12">
+      <div className="px-4 pt-4 pb-12">
         <ProgramRow
           title="あなたへのおすすめ"
           subtitle="今の録音傾向から選んだ番組"
