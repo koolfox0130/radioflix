@@ -1,15 +1,26 @@
+const API_BASE_URL =
+  process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
+
 async function getPrograms() {
-  const res = await fetch("http://127.0.0.1:8000/programs", {
+  const res = await fetch(`${API_BASE_URL}/programs`, {
     cache: "no-store",
   });
+
+  if (!res.ok) {
+    return [];
+  }
 
   return res.json();
 }
 
 async function getRecommendations() {
-  const res = await fetch("http://127.0.0.1:8000/recommendations", {
+  const res = await fetch(`${API_BASE_URL}/recommendations`, {
     cache: "no-store",
   });
+
+  if (!res.ok) {
+    return [];
+  }
 
   return res.json();
 }
@@ -23,6 +34,10 @@ function ProgramRow({
   programs: any[];
   showReason?: boolean;
 }) {
+  if (!programs || programs.length === 0) {
+    return null;
+  }
+
   return (
     <section className="mb-10">
       <h2 className="text-xl font-semibold mb-4">{title}</h2>
@@ -66,11 +81,11 @@ export default async function Home() {
   const recommendations = await getRecommendations();
 
   const annPrograms = programs.filter(
-    (p: any) => p.category === "ANN"
+    (program: any) => program.category === "ANN"
   );
 
   const junkPrograms = programs.filter(
-    (p: any) => p.category === "JUNK"
+    (program: any) => program.category === "JUNK"
   );
 
   return (

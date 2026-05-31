@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    container_name: radioflix-backend
+    restart: unless-stopped
+    environment:
+      - RADIKO_DIR=/recordings
+    volumes:
+      - /volume1/@home/kool-fox/radiko_public/radiko:/recordings:ro
+    ports:
+      - "8001:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: radioflix-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - RADIOFLIX_API_URL=http://backend:8000
+    ports:
+      - "3001:3000"
