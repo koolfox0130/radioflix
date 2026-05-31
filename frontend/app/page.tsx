@@ -41,7 +41,7 @@ function ProgramCard({
   showReason?: boolean;
 }) {
   return (
-    <div className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[170px] max-w-[170px] h-[150px] shrink-0 p-4 flex flex-col justify-between shadow-xl">
+    <div className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[185px] max-w-[185px] h-[150px] shrink-0 p-4 flex flex-col justify-between shadow-xl">
       <div>
         <div className="text-base font-bold leading-snug line-clamp-3">
           {program.title}
