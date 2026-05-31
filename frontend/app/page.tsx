@@ -41,7 +41,7 @@ function ProgramCard({
   showReason?: boolean;
 }) {
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl min-w-44 max-w-44 h-40 shrink-0 p-4 flex flex-col justify-between shadow-lg">
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl min-w-[165px] max-w-[165px] h-[145px] shrink-0 p-4 flex flex-col justify-between shadow-lg">
       <div>
         <div className="text-base font-bold leading-snug line-clamp-3">
           {program.title}
@@ -85,7 +85,7 @@ function ProgramRow({
   return (
     <section className="mb-9">
       <div className="mb-3">
-        <h2 className="text-xl font-bold">{title}</h2>
+        <h2 className="text-2xl font-bold">{title}</h2>
 
         {subtitle && (
           <p className="text-sm text-zinc-400 mt-1">
@@ -119,13 +119,15 @@ export default async function Home() {
     (program) => program.category === "JUNK"
   );
 
-  const guruPrograms = programs.filter(
-    (program) => program.category === "GURU"
+  const otherPrograms = programs.filter(
+    (program) =>
+      program.category !== "ANN" &&
+      program.category !== "JUNK"
   );
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="sticky top-0 z-10 bg-black/90 backdrop-blur px-4 pt-5 pb-3">
+      <div className="sticky top-0 z-10 bg-black/90 backdrop-blur px-4 pt-5 pb-4">
         <h1 className="text-3xl font-black tracking-tight">
           📻 RadioFlix
         </h1>
@@ -135,7 +137,7 @@ export default async function Home() {
         </p>
       </div>
 
-      <div className="px-4 pt-4 pb-10">
+      <div className="px-4 pt-3 pb-12">
         <ProgramRow
           title="あなたへのおすすめ"
           subtitle="今の録音傾向から選んだ番組"
@@ -164,7 +166,7 @@ export default async function Home() {
         <ProgramRow
           title="その他の録音番組"
           subtitle="J-WAVEなど"
-          programs={guruPrograms}
+          programs={otherPrograms}
         />
       </div>
     </main>

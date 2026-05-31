@@ -8,6 +8,20 @@ app = FastAPI()
 RADIKO_DIR = Path(os.getenv("RADIKO_DIR", "sample_programs"))
 
 
+def normalize_title(title: str) -> str:
+    return (
+        title
+        .replace("オールナイトニッポンX(クロス)", "ANNX")
+        .replace("オールナイトニッポンX", "ANNX")
+        .replace("オールナイトニッポン0(ZERO)", "ANN0")
+        .replace("オールナイトニッポン０(ZERO)", "ANN0")
+        .replace("オールナイトニッポンZERO", "ANN0")
+        .replace("オールナイトニッポン０", "ANN0")
+        .replace("オールナイトニッポン0", "ANN0")
+        .replace("オールナイトニッポン", "ANN")
+    )
+
+
 def parse_program_name(name: str):
     network = ""
     category = ""
@@ -37,6 +51,8 @@ def parse_program_name(name: str):
         network = "ラジオ日本"
         category = "その他"
         title = name.replace("JORF_", "")
+
+    title = normalize_title(title)
 
     return {
         "title": title,
@@ -94,13 +110,13 @@ def recommendations():
             "reason": "JUNK系・芸人雑談が好きそうだから",
         },
         {
-            "title": "佐久間宣行のオールナイトニッポン0",
+            "title": "佐久間宣行のANN0",
             "network": "ニッポン放送",
             "category": "おすすめ",
             "reason": "ANN0系の深夜トークと相性が良さそうだから",
         },
         {
-            "title": "オードリーのオールナイトニッポン",
+            "title": "オードリーのANN",
             "network": "ニッポン放送",
             "category": "おすすめ",
             "reason": "芸人の長尺フリートーク好き向け",
@@ -112,7 +128,7 @@ def recommendations():
             "reason": "若手芸人ラジオ好き向け",
         },
         {
-            "title": "三四郎のオールナイトニッポン0",
+            "title": "三四郎のANN0",
             "network": "ニッポン放送",
             "category": "おすすめ",
             "reason": "ANN0好き向け",
@@ -121,7 +137,7 @@ def recommendations():
             "title": "問わず語りの神田伯山",
             "network": "TBS",
             "category": "おすすめ",
-            "reason": "爆笑問題・山里系のトークが好きなら刺さりそうだから",
+            "reason": "爆笑問題・山里のトークが好きなら刺さりそうだから",
         },
     ]
 
