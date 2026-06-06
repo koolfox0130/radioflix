@@ -24,12 +24,12 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
       const diff = textEl.scrollWidth - container.clientWidth;
 
       setShouldScroll(diff > 8);
-      setDistance(Math.max(diff + 24, 0));
+      setDistance(Math.max(diff + 32, 0));
     };
 
     check();
 
-    const timer = setTimeout(check, 300);
+    const timer = setTimeout(check, 500);
     window.addEventListener("resize", check);
 
     return () => {
@@ -38,41 +38,43 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
     };
   }, [text]);
 
-  const duration = Math.min(Math.max(distance / 10, 8), 18);
+  const duration = Math.min(Math.max(distance / 10, 8), 20);
 
   return (
     <div
       ref={containerRef}
-      className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+      className={className}
       title={text}
+      style={{
+        width: "100%",
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+        wordBreak: "normal",
+        overflowWrap: "normal",
+        lineHeight: 1.4,
+      }}
     >
       <span
         ref={textRef}
-        className={
-          shouldScroll
-            ? "inline-block whitespace-nowrap radioflix-marquee"
-            : "block whitespace-nowrap overflow-hidden text-ellipsis"
-        }
-        style={
-          shouldScroll
-            ? ({
-                "--scroll-distance": `${distance}px`,
-                "--scroll-duration": `${duration}s`,
-              } as React.CSSProperties)
-            : undefined
-        }
+        style={{
+          display: "inline-block",
+          whiteSpace: "nowrap",
+          wordBreak: "normal",
+          overflowWrap: "normal",
+          maxWidth: shouldScroll ? "none" : "100%",
+          overflow: shouldScroll ? "visible" : "hidden",
+          textOverflow: shouldScroll ? "clip" : "ellipsis",
+          animation: shouldScroll
+            ? `radioflix-title-scroll ${duration}s ease-in-out 1s infinite alternate`
+            : "none",
+          ["--scroll-distance" as string]: `${distance}px`,
+        }}
       >
         {text}
       </span>
 
       <style jsx>{`
-        .radioflix-marquee {
-          animation: radioflix-marquee var(--scroll-duration) ease-in-out
-            infinite alternate;
-          animation-delay: 1s;
-        }
-
-        @keyframes radioflix-marquee {
+        @keyframes radioflix-title-scroll {
           0% {
             transform: translateX(0);
           }
