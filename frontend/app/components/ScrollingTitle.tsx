@@ -1,143 +1,60 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-
 type Props = {
   text: string;
   className?: string;
 };
 
 export default function ScrollingTitle({ text, className = "" }: Props) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const length = Array.from(text).length;
 
-  const [shouldScroll, setShouldScroll] = useState(false);
-  const [distance, setDistance] = useState(0);
+  // この文字数を超えたら必ずスクロール
+  const shouldScroll = length >= 11;
 
-  useEffect(() => {
-    const check = () => {
-      const container = containerRef.current;
-      const measure = measureRef.current;
-
-      if (!container || !measure) return;
-
-      const containerWidth = container.clientWidth;
-      const textWidth = measure.scrollWidth;
-      const diff = textWidth - containerWidth;
-
-      setShouldScroll(diff > 8);
-      setDistance(Math.max(diff + 32, 0));
-    };
-
-    check();
-
-    const timer1 = setTimeout(check, 300);
-    const timer2 = setTimeout(check, 1000);
-
-    window.addEventListener("resize", check);
-
-    return () => {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-      window.removeEventListener("resize", check);
-    };
-  }, [text]);
-
-  const duration = Math.min(Math.max(distance / 10, 8), 22);
-
-  return (
-    <>
+  if (!shouldScroll) {
+    return (
       <div
-        ref={containerRef}
-        className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+        className={`w-full overflow-hidden whitespace-nowrap text-ellipsis ${className}`}
         title={text}
       >
-        {!shouldScroll && (
-          <span className="block w-full overflow-hidden whitespace-nowrap text-ellipsis">
-            {text}
-          </span>
-        )}
+        {text}
+      </div>
+    );
+  }
 
-        {shouldScroll && (
-          <>
-            <span className="block w-full overflow-hidden whitespace-nowrap text-ellipsis radioflix-title-ellipsis">
-              {text}
-            </span>
-
-            <span
-              className="absolute left-0 top-0 inline-block whitespace-nowrap opacity-0 radioflix-title-scroll"
-              style={
-                {
-                  "--scroll-distance": `${distance}px`,
-                  "--scroll-duration": `${duration}s`,
-                } as React.CSSProperties
-              }
-            >
-              {text}
-            </span>
-          </>
-        )}
+  return (
+    <div
+      className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+      title={text}
+    >
+      <div className="radioflix-marquee-title inline-block whitespace-nowrap pr-8">
+        {text}
       </div>
 
-      <span
-        ref={measureRef}
-        className={className}
-        style={{
-          position: "fixed",
-          left: "-99999px",
-          top: "-99999px",
-          whiteSpace: "nowrap",
-          visibility: "hidden",
-          pointerEvents: "none",
-        }}
-      >
-        {text}
-      </span>
-
       <style jsx>{`
-        .radioflix-title-ellipsis {
-          animation: radioflix-hide-ellipsis 0.2s ease forwards;
-          animation-delay: 1.8s;
+        .radioflix-marquee-title {
+          animation: radioflix-marquee-title 12s ease-in-out infinite;
+          animation-delay: 1s;
         }
 
-        .radioflix-title-scroll {
-          animation:
-            radioflix-show-scroll 0.2s ease forwards 1.8s,
-            radioflix-title-marquee var(--scroll-duration) ease-in-out 2s infinite alternate;
-        }
-
-        @keyframes radioflix-hide-ellipsis {
-          from {
-            opacity: 1;
-          }
-          to {
-            opacity: 0;
-          }
-        }
-
-        @keyframes radioflix-show-scroll {
-          from {
-            opacity: 0;
-          }
-          to {
-            opacity: 1;
-          }
-        }
-
-        @keyframes radioflix-title-marquee {
+        @keyframes radioflix-marquee-title {
           0% {
             transform: translateX(0);
           }
 
-          25% {
+          20% {
             transform: translateX(0);
           }
 
+          70% {
+            transform: translateX(-55%);
+          }
+
           100% {
-            transform: translateX(calc(var(--scroll-distance) * -1));
+            transform: translateX(0);
           }
         }
       `}</style>
-    </>
+    </div>
   );
 }
