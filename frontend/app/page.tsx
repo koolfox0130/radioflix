@@ -49,7 +49,7 @@ function ProgramCard({
       href={`/program/${encodeURIComponent(program.id)}`}
       className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[185px] max-w-[185px] h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
     >
-      <div className="min-w-0">
+      <div className="min-w-0 w-full">
         <ScrollingTitle
           text={program.title}
           className="text-base font-bold leading-snug"
@@ -62,7 +62,7 @@ function ProgramCard({
         )}
       </div>
 
-      <div className="min-w-0">
+      <div className="min-w-0 w-full">
         <div className="text-xs text-zinc-300 truncate">
           {program.network || "不明"}
         </div>

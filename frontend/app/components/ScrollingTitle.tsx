@@ -9,71 +9,100 @@ type Props = {
 
 export default function ScrollingTitle({ text, className = "" }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const textRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
 
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [distance, setDistance] = useState(0);
 
   useEffect(() => {
-    const check = () => {
+    const checkOverflow = () => {
       const container = containerRef.current;
-      const textEl = textRef.current;
+      const measure = measureRef.current;
 
-      if (!container || !textEl) return;
+      if (!container || !measure) return;
 
-      const diff = textEl.scrollWidth - container.clientWidth;
+      const diff = measure.scrollWidth - container.clientWidth;
 
       setIsOverflowing(diff > 4);
       setDistance(Math.max(diff, 0));
     };
 
-    check();
-    window.addEventListener("resize", check);
+    checkOverflow();
+
+    window.addEventListener("resize", checkOverflow);
 
     return () => {
-      window.removeEventListener("resize", check);
+      window.removeEventListener("resize", checkOverflow);
     };
   }, [text]);
 
-  const duration = Math.min(Math.max(distance / 12, 6), 16);
+  const duration = Math.min(Math.max(distance / 12, 7), 18);
 
   return (
     <div
       ref={containerRef}
-      className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+      className={className}
       title={text}
+      style={{
+        width: "100%",
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+      }}
     >
       <span
-        ref={textRef}
-        className={
-          isOverflowing
-            ? "inline-block whitespace-nowrap animate-title-scroll"
-            : "block whitespace-nowrap overflow-hidden text-ellipsis"
-        }
-        style={
-          isOverflowing
-            ? ({
-                "--scroll-distance": `${distance}px`,
-                "--scroll-duration": `${duration}s`,
-              } as React.CSSProperties)
-            : undefined
-        }
+        ref={measureRef}
+        style={{
+          position: "absolute",
+          visibility: "hidden",
+          whiteSpace: "nowrap",
+          pointerEvents: "none",
+        }}
       >
         {text}
       </span>
 
+      {!isOverflowing && (
+        <span
+          style={{
+            display: "block",
+            overflow: "hidden",
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {text}
+        </span>
+      )}
+
+      {isOverflowing && (
+        <span
+          className="radioflix-scroll-title"
+          style={
+            {
+              display: "inline-block",
+              whiteSpace: "nowrap",
+              "--scroll-distance": `${distance}px`,
+              "--scroll-duration": `${duration}s`,
+            } as React.CSSProperties
+          }
+        >
+          {text}
+        </span>
+      )}
+
       <style jsx>{`
-        .animate-title-scroll {
-          animation: title-scroll var(--scroll-duration) linear infinite alternate;
+        .radioflix-scroll-title {
+          animation: radioflix-title-scroll var(--scroll-duration) linear
+            infinite alternate;
           animation-delay: 1.2s;
         }
 
-        @keyframes title-scroll {
+        @keyframes radioflix-title-scroll {
           0% {
             transform: translateX(0);
           }
 
-          20% {
+          25% {
             transform: translateX(0);
           }
 
