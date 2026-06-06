@@ -24,3 +24,28 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+.radioflix-marquee-title {
+  animation-name: radioflix-marquee-title;
+  animation-duration: 12s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-delay: 1s;
+}
+
+@keyframes radioflix-marquee-title {
+  0% {
+    transform: translateX(0);
+  }
+
+  20% {
+    transform: translateX(0);
+  }
+
+  70% {
+    transform: translateX(-45%);
+  }
+
+  100% {
+    transform: translateX(0);
+  }
+}

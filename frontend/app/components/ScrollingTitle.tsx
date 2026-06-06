@@ -8,7 +8,7 @@ type Props = {
 export default function ScrollingTitle({ text, className = "" }: Props) {
   const length = Array.from(text).length;
 
-  // この文字数を超えたら必ずスクロール
+  // 11文字以上ならスクロール対象
   const shouldScroll = length >= 11;
 
   if (!shouldScroll) {
@@ -24,37 +24,12 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
 
   return (
     <div
-      className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+      className={`w-full overflow-hidden whitespace-nowrap ${className}`}
       title={text}
     >
-      <div className="radioflix-marquee-title inline-block whitespace-nowrap pr-8">
+      <span className="radioflix-marquee-title inline-block whitespace-nowrap">
         {text}
-      </div>
-
-      <style jsx>{`
-        .radioflix-marquee-title {
-          animation: radioflix-marquee-title 12s ease-in-out infinite;
-          animation-delay: 1s;
-        }
-
-        @keyframes radioflix-marquee-title {
-          0% {
-            transform: translateX(0);
-          }
-
-          20% {
-            transform: translateX(0);
-          }
-
-          70% {
-            transform: translateX(-55%);
-          }
-
-          100% {
-            transform: translateX(0);
-          }
-        }
-      `}</style>
+      </span>
     </div>
   );
 }
