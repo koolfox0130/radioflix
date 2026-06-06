@@ -9,109 +9,74 @@ type Props = {
 
 export default function ScrollingTitle({ text, className = "" }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const textRef = useRef<HTMLSpanElement | null>(null);
 
   const [isOverflowing, setIsOverflowing] = useState(false);
-  const [scrollDistance, setScrollDistance] = useState(0);
+  const [distance, setDistance] = useState(0);
 
   useEffect(() => {
-    const checkOverflow = () => {
+    const check = () => {
       const container = containerRef.current;
-      const measure = measureRef.current;
+      const textEl = textRef.current;
 
-      if (!container || !measure) return;
+      if (!container || !textEl) return;
 
-      const distance = measure.scrollWidth - container.clientWidth;
+      const diff = textEl.scrollWidth - container.clientWidth;
 
-      setIsOverflowing(distance > 4);
-      setScrollDistance(Math.max(distance, 0));
+      setIsOverflowing(diff > 4);
+      setDistance(Math.max(diff, 0));
     };
 
-    checkOverflow();
-
-    window.addEventListener("resize", checkOverflow);
+    check();
+    window.addEventListener("resize", check);
 
     return () => {
-      window.removeEventListener("resize", checkOverflow);
+      window.removeEventListener("resize", check);
     };
   }, [text]);
 
-  if (!isOverflowing) {
-    return (
-      <div
-        ref={containerRef}
-        className={`whitespace-nowrap overflow-hidden text-ellipsis ${className}`}
-        title={text}
-      >
-        <span ref={measureRef}>{text}</span>
-      </div>
-    );
-  }
-
-  const duration = Math.min(Math.max(scrollDistance / 14, 6), 14);
+  const duration = Math.min(Math.max(distance / 12, 6), 16);
 
   return (
     <div
       ref={containerRef}
-      className={`relative whitespace-nowrap overflow-hidden ${className}`}
+      className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
       title={text}
     >
       <span
-        ref={measureRef}
-        className="block overflow-hidden text-ellipsis whitespace-nowrap radioflix-title-ellipsis"
-      >
-        {text}
-      </span>
-
-      <span
-        className="absolute left-0 top-0 inline-block pr-8 opacity-0 radioflix-title-scroll"
+        ref={textRef}
+        className={
+          isOverflowing
+            ? "inline-block whitespace-nowrap animate-title-scroll"
+            : "block whitespace-nowrap overflow-hidden text-ellipsis"
+        }
         style={
-          {
-            "--scroll-distance": `${scrollDistance}px`,
-            "--scroll-duration": `${duration}s`,
-          } as React.CSSProperties
+          isOverflowing
+            ? ({
+                "--scroll-distance": `${distance}px`,
+                "--scroll-duration": `${duration}s`,
+              } as React.CSSProperties)
+            : undefined
         }
       >
         {text}
       </span>
 
       <style jsx>{`
-        .radioflix-title-ellipsis {
-          animation: radioflix-ellipsis-hide 1.2s ease forwards;
-          animation-delay: 1.8s;
+        .animate-title-scroll {
+          animation: title-scroll var(--scroll-duration) linear infinite alternate;
+          animation-delay: 1.2s;
         }
 
-        .radioflix-title-scroll {
-          animation:
-            radioflix-scroll-show 0.2s ease forwards 1.8s,
-            radioflix-marquee var(--scroll-duration) linear 2s infinite alternate;
-        }
-
-        @keyframes radioflix-ellipsis-hide {
-          from {
-            opacity: 1;
-          }
-          to {
-            opacity: 0;
-          }
-        }
-
-        @keyframes radioflix-scroll-show {
-          from {
-            opacity: 0;
-          }
-          to {
-            opacity: 1;
-          }
-        }
-
-        @keyframes radioflix-marquee {
+        @keyframes title-scroll {
           0% {
             transform: translateX(0);
           }
+
           20% {
             transform: translateX(0);
           }
+
           100% {
             transform: translateX(calc(var(--scroll-distance) * -1));
           }
