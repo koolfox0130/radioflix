@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const API_BASE_URL =
   process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
 
@@ -26,12 +28,31 @@ async function getRecommendations() {
 }
 
 type Program = {
+  id: string;
   title: string;
   network: string;
   category: string;
   reason?: string;
   raw_name?: string;
 };
+
+function getCardWidth(title: string) {
+  const length = Array.from(title).length;
+
+  if (length <= 8) {
+    return 185;
+  }
+
+  if (length <= 12) {
+    return 215;
+  }
+
+  if (length <= 16) {
+    return 245;
+  }
+
+  return 280;
+}
 
 function ProgramCard({
   program,
@@ -40,10 +61,19 @@ function ProgramCard({
   program: Program;
   showReason?: boolean;
 }) {
+  const cardWidth = getCardWidth(program.title);
+
   return (
-    <div className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[185px] max-w-[185px] h-[150px] shrink-0 p-4 flex flex-col justify-between shadow-xl">
+    <Link
+      href={`/program/${encodeURIComponent(program.id)}`}
+      style={{
+        minWidth: `${cardWidth}px`,
+        maxWidth: `${cardWidth}px`,
+      }}
+      className="bg-[#232428] border border-[#34363b] rounded-2xl h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
+    >
       <div>
-        <div className="text-base font-bold leading-snug line-clamp-3">
+        <div className="text-base font-bold leading-snug line-clamp-3 [word-break:keep-all]">
           {program.title}
         </div>
 
@@ -63,7 +93,7 @@ function ProgramCard({
           {program.category || "その他"}
         </div>
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -97,7 +127,7 @@ function ProgramRow({
       <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {programs.map((program: Program) => (
           <ProgramCard
-            key={`${title}-${program.title}`}
+            key={`${title}-${program.id}`}
             program={program}
             showReason={showReason}
           />
