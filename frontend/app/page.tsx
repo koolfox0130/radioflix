@@ -1,4 +1,4 @@
-import Link from "next/link";
+import ScrollingTitle from "./components/ScrollingTitle";
 
 const API_BASE_URL =
   process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
@@ -73,9 +73,10 @@ function ProgramCard({
       className="bg-[#232428] border border-[#34363b] rounded-2xl h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
     >
       <div>
-        <div className="text-base font-bold leading-snug line-clamp-3 [word-break:keep-all]">
-          {program.title}
-        </div>
+        <ScrollingTitle
+          text={program.title}
+        className="text-base font-bold leading-snug"
+        />
 
         {showReason && program.reason && (
           <div className="text-xs text-zinc-400 mt-2 leading-relaxed line-clamp-2">
