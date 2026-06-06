@@ -37,6 +37,28 @@ type Program = {
   raw_name?: string;
 };
 
+function getCardWidth(program: Program) {
+  const length = Array.from(program.title).length;
+
+  if (program.category === "JUNK") {
+    return 235;
+  }
+
+  if (length <= 6) {
+    return 185;
+  }
+
+  if (length <= 10) {
+    return 215;
+  }
+
+  if (length <= 14) {
+    return 235;
+  }
+
+  return 255;
+}
+
 function ProgramCard({
   program,
   showReason = false,
@@ -44,10 +66,16 @@ function ProgramCard({
   program: Program;
   showReason?: boolean;
 }) {
+  const cardWidth = getCardWidth(program);
+
   return (
     <Link
       href={`/program/${encodeURIComponent(program.id)}`}
-      className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[185px] max-w-[185px] h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
+      style={{
+        minWidth: `${cardWidth}px`,
+        maxWidth: `${cardWidth}px`,
+      }}
+      className="bg-[#232428] border border-[#34363b] rounded-2xl h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
     >
       <div className="min-w-0 w-full">
         <ScrollingTitle
