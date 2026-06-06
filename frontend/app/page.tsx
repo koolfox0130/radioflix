@@ -1,3 +1,4 @@
+import Link from "next/link";
 import ScrollingTitle from "./components/ScrollingTitle";
 
 const API_BASE_URL =
@@ -36,24 +37,6 @@ type Program = {
   raw_name?: string;
 };
 
-function getCardWidth(title: string) {
-  const length = Array.from(title).length;
-
-  if (length <= 8) {
-    return 185;
-  }
-
-  if (length <= 12) {
-    return 215;
-  }
-
-  if (length <= 16) {
-    return 245;
-  }
-
-  return 280;
-}
-
 function ProgramCard({
   program,
   showReason = false,
@@ -61,21 +44,15 @@ function ProgramCard({
   program: Program;
   showReason?: boolean;
 }) {
-  const cardWidth = getCardWidth(program.title);
-
   return (
     <Link
       href={`/program/${encodeURIComponent(program.id)}`}
-      style={{
-        minWidth: `${cardWidth}px`,
-        maxWidth: `${cardWidth}px`,
-      }}
-      className="bg-[#232428] border border-[#34363b] rounded-2xl h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
+      className="bg-[#232428] border border-[#34363b] rounded-2xl min-w-[185px] max-w-[185px] h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
     >
       <div>
         <ScrollingTitle
           text={program.title}
-        className="text-base font-bold leading-snug"
+          className="text-base font-bold leading-snug"
         />
 
         {showReason && program.reason && (
