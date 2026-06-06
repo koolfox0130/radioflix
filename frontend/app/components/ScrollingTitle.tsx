@@ -9,7 +9,7 @@ type Props = {
 
 export default function ScrollingTitle({ text, className = "" }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const textRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
 
   const [shouldScroll, setShouldScroll] = useState(false);
   const [distance, setDistance] = useState(0);
@@ -17,11 +17,13 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
   useEffect(() => {
     const check = () => {
       const container = containerRef.current;
-      const textEl = textRef.current;
+      const measure = measureRef.current;
 
-      if (!container || !textEl) return;
+      if (!container || !measure) return;
 
-      const diff = textEl.scrollWidth - container.clientWidth;
+      const containerWidth = container.clientWidth;
+      const textWidth = measure.scrollWidth;
+      const diff = textWidth - containerWidth;
 
       setShouldScroll(diff > 8);
       setDistance(Math.max(diff + 32, 0));
@@ -29,52 +31,100 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
 
     check();
 
-    const timer = setTimeout(check, 500);
+    const timer1 = setTimeout(check, 300);
+    const timer2 = setTimeout(check, 1000);
+
     window.addEventListener("resize", check);
 
     return () => {
-      clearTimeout(timer);
+      clearTimeout(timer1);
+      clearTimeout(timer2);
       window.removeEventListener("resize", check);
     };
   }, [text]);
 
-  const duration = Math.min(Math.max(distance / 10, 8), 20);
+  const duration = Math.min(Math.max(distance / 10, 8), 22);
 
   return (
-    <div
-      ref={containerRef}
-      className={className}
-      title={text}
-      style={{
-        width: "100%",
-        overflow: "hidden",
-        whiteSpace: "nowrap",
-        wordBreak: "normal",
-        overflowWrap: "normal",
-        lineHeight: 1.4,
-      }}
-    >
+    <>
+      <div
+        ref={containerRef}
+        className={`relative w-full overflow-hidden whitespace-nowrap ${className}`}
+        title={text}
+      >
+        {!shouldScroll && (
+          <span className="block w-full overflow-hidden whitespace-nowrap text-ellipsis">
+            {text}
+          </span>
+        )}
+
+        {shouldScroll && (
+          <>
+            <span className="block w-full overflow-hidden whitespace-nowrap text-ellipsis radioflix-title-ellipsis">
+              {text}
+            </span>
+
+            <span
+              className="absolute left-0 top-0 inline-block whitespace-nowrap opacity-0 radioflix-title-scroll"
+              style={
+                {
+                  "--scroll-distance": `${distance}px`,
+                  "--scroll-duration": `${duration}s`,
+                } as React.CSSProperties
+              }
+            >
+              {text}
+            </span>
+          </>
+        )}
+      </div>
+
       <span
-        ref={textRef}
+        ref={measureRef}
+        className={className}
         style={{
-          display: "inline-block",
+          position: "fixed",
+          left: "-99999px",
+          top: "-99999px",
           whiteSpace: "nowrap",
-          wordBreak: "normal",
-          overflowWrap: "normal",
-          maxWidth: shouldScroll ? "none" : "100%",
-          overflow: shouldScroll ? "visible" : "hidden",
-          textOverflow: shouldScroll ? "clip" : "ellipsis",
-          animation: shouldScroll
-            ? `radioflix-title-scroll ${duration}s ease-in-out 1s infinite alternate`
-            : "none",
-          ["--scroll-distance" as string]: `${distance}px`,
+          visibility: "hidden",
+          pointerEvents: "none",
         }}
       >
         {text}
       </span>
 
       <style jsx>{`
-        @keyframes radioflix-title-scroll {
+        .radioflix-title-ellipsis {
+          animation: radioflix-hide-ellipsis 0.2s ease forwards;
+          animation-delay: 1.8s;
+        }
+
+        .radioflix-title-scroll {
+          animation:
+            radioflix-show-scroll 0.2s ease forwards 1.8s,
+            radioflix-title-marquee var(--scroll-duration) ease-in-out 2s infinite alternate;
+        }
+
+        @keyframes radioflix-hide-ellipsis {
+          from {
+            opacity: 1;
+          }
+          to {
+            opacity: 0;
+          }
+        }
+
+        @keyframes radioflix-show-scroll {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+
+        @keyframes radioflix-title-marquee {
           0% {
             transform: translateX(0);
           }
@@ -88,6 +138,6 @@ export default function ScrollingTitle({ text, className = "" }: Props) {
           }
         }
       `}</style>
-    </div>
+    </>
   );
 }
