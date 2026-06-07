@@ -1,12 +1,22 @@
+import mimetypes
 import os
 import re
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 app = FastAPI()
 
 RADIKO_DIR = Path(os.getenv("RADIKO_DIR", "sample_programs"))
+
+AUDIO_EXTENSIONS = {
+    ".m4a",
+    ".mp3",
+    ".aac",
+    ".wav",
+}
 
 
 def make_program_id(raw_name: str) -> str:
@@ -145,6 +155,68 @@ def get_recommendation_candidates():
     ]
 
 
+def get_all_programs():
+    return get_recorded_programs() + recommendations()
+
+
+def find_program(program_id: str):
+    for program in get_all_programs():
+        if program["id"] == program_id:
+            return program
+
+    return None
+
+
+def get_program_folder(program_id: str):
+    program = find_program(program_id)
+
+    if not program:
+        return None
+
+    if program["category"] == "おすすめ":
+        return None
+
+    folder = RADIKO_DIR / program["raw_name"]
+
+    if not folder.exists() or not folder.is_dir():
+        return None
+
+    return folder
+
+
+def get_episode_files(program_id: str):
+    folder = get_program_folder(program_id)
+
+    if not folder:
+        return []
+
+    episodes = []
+
+    for file in folder.iterdir():
+        if not file.is_file():
+            continue
+
+        if file.suffix.lower() not in AUDIO_EXTENSIONS:
+            continue
+
+        stat = file.stat()
+
+        episodes.append(
+            {
+                "filename": file.name,
+                "title": file.stem,
+                "size": stat.st_size,
+                "updated_at": stat.st_mtime,
+            }
+        )
+
+    return sorted(
+        episodes,
+        key=lambda x: x["updated_at"],
+        reverse=True,
+    )
+
+
 @app.get("/")
 def root():
     return {
@@ -154,11 +226,13 @@ def root():
 
 
 @app.get("/programs")
+@app.get("/api/programs")
 def programs():
     return get_recorded_programs()
 
 
 @app.get("/recommendations")
+@app.get("/api/recommendations")
 def recommendations():
     recorded_titles = [
         program["title"] for program in get_recorded_programs()
@@ -172,11 +246,52 @@ def recommendations():
 
 
 @app.get("/programs/{program_id}")
+@app.get("/api/programs/{program_id}")
 def program_detail(program_id: str):
-    all_programs = get_recorded_programs() + recommendations()
+    program = find_program(program_id)
 
-    for program in all_programs:
-        if program["id"] == program_id:
-            return program
+    if not program:
+        raise HTTPException(status_code=404, detail="Program not found")
 
-    raise HTTPException(status_code=404, detail="Program not found")
+    return program
+
+
+@app.get("/programs/{program_id}/episodes")
+@app.get("/api/programs/{program_id}/episodes")
+def program_episodes(program_id: str):
+    return get_episode_files(program_id)
+
+
+@app.get("/audio/{program_id}/{filename:path}")
+@app.get("/api/audio/{program_id}/{filename:path}")
+def audio_file(program_id: str, filename: str):
+    folder = get_program_folder(program_id)
+
+    if not folder:
+        raise HTTPException(status_code=404, detail="Program folder not found")
+
+    decoded_filename = unquote(filename)
+    file_path = folder / decoded_filename
+
+    try:
+        resolved_folder = folder.resolve()
+        resolved_file = file_path.resolve()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    if resolved_folder not in resolved_file.parents:
+        raise HTTPException(status_code=403, detail="Invalid path")
+
+    if not resolved_file.exists() or not resolved_file.is_file():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    if resolved_file.suffix.lower() not in AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported audio file")
+
+    media_type, _ = mimetypes.guess_type(str(resolved_file))
+
+    return FileResponse(
+        resolved_file,
+        media_type=media_type or "audio/mp4",
+        filename=resolved_file.name,
+    )

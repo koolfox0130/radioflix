@@ -3,6 +3,11 @@ import Link from "next/link";
 const API_BASE_URL =
   process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
 
+const PUBLIC_API_BASE_URL =
+  process.env.RADIOFLIX_PUBLIC_API_URL ??
+  process.env.RADIOFLIX_API_URL ??
+  "http://127.0.0.1:8000";
+
 type Program = {
   id: string;
   title: string;
@@ -10,6 +15,13 @@ type Program = {
   category: string;
   reason?: string;
   raw_name?: string;
+};
+
+type Episode = {
+  filename: string;
+  title: string;
+  size: number;
+  updated_at: number;
 };
 
 async function getProgram(id: string): Promise<Program | null> {
@@ -27,6 +39,34 @@ async function getProgram(id: string): Promise<Program | null> {
   return res.json();
 }
 
+async function getEpisodes(id: string): Promise<Episode[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/programs/${encodeURIComponent(id)}/episodes`,
+    {
+      cache: "no-store",
+    }
+  );
+
+  if (!res.ok) {
+    return [];
+  }
+
+  return res.json();
+}
+
+function formatFileSize(size: number) {
+  const mb = size / 1024 / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function formatDate(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleDateString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 export default async function ProgramDetail({
   params,
 }: {
@@ -34,6 +74,7 @@ export default async function ProgramDetail({
 }) {
   const { id } = await params;
   const program = await getProgram(id);
+  const episodes = await getEpisodes(id);
 
   if (!program) {
     return (
@@ -51,13 +92,13 @@ export default async function ProgramDetail({
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="px-4 pt-6 pb-4">
+      <div className="px-4 pt-6 pb-4 max-w-xl mx-auto">
         <Link href="/" className="text-sm text-zinc-400">
           ← RadioFlixへ戻る
         </Link>
       </div>
 
-      <section className="px-4 pb-10">
+      <section className="px-4 pb-10 max-w-xl mx-auto">
         <div className="bg-[#232428] border border-[#34363b] rounded-3xl p-6 shadow-xl">
           <div className="text-xs text-yellow-300 bg-yellow-300/10 inline-block px-3 py-1 rounded-full mb-4">
             {program.category || "その他"}
@@ -104,6 +145,49 @@ export default async function ProgramDetail({
               <p className="text-xs text-zinc-500 break-all">
                 {program.raw_name}
               </p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-8">
+          <h2 className="text-2xl font-bold mb-4">
+            録音データ
+          </h2>
+
+          {episodes.length === 0 ? (
+            <div className="bg-[#232428] border border-[#34363b] rounded-2xl p-4 text-zinc-400">
+              録音データが見つかりません
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {episodes.map((episode) => {
+                const audioUrl = `${PUBLIC_API_BASE_URL}/audio/${encodeURIComponent(
+                  program.id
+                )}/${encodeURIComponent(episode.filename)}`;
+
+                return (
+                  <div
+                    key={episode.filename}
+                    className="bg-[#232428] border border-[#34363b] rounded-2xl p-4"
+                  >
+                    <div className="font-bold leading-snug break-all">
+                      {episode.title}
+                    </div>
+
+                    <div className="text-xs text-zinc-400 mt-2">
+                      {formatDate(episode.updated_at)} /{" "}
+                      {formatFileSize(episode.size)}
+                    </div>
+
+                    <audio
+                      controls
+                      preload="none"
+                      src={audioUrl}
+                      className="w-full mt-4"
+                    />
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
