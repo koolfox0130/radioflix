@@ -82,7 +82,7 @@ export default function RadioPlayer({
 
       audio.load();
       audio.play().catch(() => {
-        // ブラウザ側の自動再生制限で失敗することがあるので握りつぶす
+        // ブラウザの自動再生制限で失敗することがあるので無視
       });
     }, 0);
   }
@@ -102,6 +102,9 @@ export default function RadioPlayer({
       </div>
     );
   }
+
+  const buttonBase =
+    "rounded-2xl border border-zinc-600 bg-zinc-800 px-4 py-4 text-base font-black text-white shadow active:scale-95 disabled:opacity-30 disabled:active:scale-100";
 
   return (
     <div className="space-y-5">
@@ -127,39 +130,39 @@ export default function RadioPlayer({
           className="w-full mt-5"
         />
 
-        <div className="grid grid-cols-4 gap-2 mt-5">
+        <div className="grid grid-cols-2 gap-3 mt-5">
           <button
             type="button"
             onClick={playPreviousEpisode}
             disabled={currentIndex === 0}
-            className="rounded-2xl bg-zinc-800 px-2 py-3 text-sm font-bold disabled:opacity-30"
+            className={buttonBase}
           >
-            前の録音
+            ⏮ 前の録音
           </button>
 
           <button
             type="button"
             onClick={() => skip(-15)}
-            className="rounded-2xl bg-zinc-800 px-2 py-3 text-sm font-bold"
+            className={buttonBase}
           >
-            -15秒
+            ↩ 15秒戻る
           </button>
 
           <button
             type="button"
             onClick={() => skip(30)}
-            className="rounded-2xl bg-zinc-800 px-2 py-3 text-sm font-bold"
+            className={buttonBase}
           >
-            +30秒
+            30秒進む ↪
           </button>
 
           <button
             type="button"
             onClick={playNextEpisode}
             disabled={currentIndex === episodes.length - 1}
-            className="rounded-2xl bg-zinc-800 px-2 py-3 text-sm font-bold disabled:opacity-30"
+            className={buttonBase}
           >
-            次の録音
+            次の録音 ⏭
           </button>
         </div>
       </div>
@@ -173,9 +176,9 @@ export default function RadioPlayer({
               key={episode.filename}
               type="button"
               onClick={() => moveEpisode(index)}
-              className={`w-full text-left rounded-2xl border p-4 ${
+              className={`w-full text-left rounded-2xl border p-4 active:scale-[0.99] ${
                 isActive
-                  ? "bg-yellow-300/10 border-yellow-300/50"
+                  ? "bg-yellow-300/10 border-yellow-300/70"
                   : "bg-[#232428] border-[#34363b]"
               }`}
             >
