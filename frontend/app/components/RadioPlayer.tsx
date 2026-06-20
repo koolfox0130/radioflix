@@ -60,6 +60,7 @@ export default function RadioPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("待機中");
 
   const currentEpisode = episodes[currentIndex];
 
@@ -84,36 +85,54 @@ export default function RadioPlayer({
 
     function handleLoadedMetadata() {
       setDuration(audio.duration || 0);
+      setStatusMessage("音声データを読み込みました");
+    }
+
+    function handleCanPlay() {
+      setStatusMessage("再生できます");
     }
 
     function handlePlay() {
       setIsPlaying(true);
+      setStatusMessage("再生中");
     }
 
     function handlePause() {
       setIsPlaying(false);
+      setStatusMessage("一時停止中");
     }
 
     function handleEnded() {
       setIsPlaying(false);
+      setStatusMessage("再生終了");
 
       if (currentIndex < episodes.length - 1) {
         moveEpisode(currentIndex + 1, true);
       }
     }
 
+    function handleError() {
+      const errorCode = audio.error?.code ?? "unknown";
+      setIsPlaying(false);
+      setStatusMessage(`音声の読み込みに失敗しました code=${errorCode}`);
+    }
+
     audio.addEventListener("timeupdate", handleTimeUpdate);
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+    audio.addEventListener("canplay", handleCanPlay);
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("error", handleError);
 
     return () => {
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.removeEventListener("canplay", handleCanPlay);
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("error", handleError);
     };
   }, [currentIndex, episodes.length]);
 
@@ -121,11 +140,15 @@ export default function RadioPlayer({
     const audio = audioRef.current;
 
     if (!audio) {
+      setStatusMessage("audio要素が見つかりません");
       return;
     }
 
-    audio.play().catch(() => {
+    setStatusMessage("再生を開始しています...");
+
+    audio.play().catch((error) => {
       setIsPlaying(false);
+      setStatusMessage(`再生に失敗しました: ${error.name}`);
     });
   }
 
@@ -152,6 +175,7 @@ export default function RadioPlayer({
     const audio = audioRef.current;
 
     if (!audio) {
+      setStatusMessage("audio要素が見つかりません");
       return;
     }
 
@@ -162,6 +186,7 @@ export default function RadioPlayer({
 
     audio.currentTime = nextTime;
     setCurrentTime(nextTime);
+    setStatusMessage(`${seconds > 0 ? seconds + "秒進めました" : Math.abs(seconds) + "秒戻しました"}`);
   }
 
   function moveEpisode(nextIndex: number, shouldPlay = isPlaying) {
@@ -172,6 +197,8 @@ export default function RadioPlayer({
     setCurrentIndex(nextIndex);
     setCurrentTime(0);
     setDuration(0);
+    setIsPlaying(false);
+    setStatusMessage("録音を切り替えました");
 
     setTimeout(() => {
       const audio = audioRef.current;
@@ -183,8 +210,9 @@ export default function RadioPlayer({
       audio.load();
 
       if (shouldPlay) {
-        audio.play().catch(() => {
+        audio.play().catch((error) => {
           setIsPlaying(false);
+          setStatusMessage(`切り替え後の再生に失敗しました: ${error.name}`);
         });
       }
     }, 0);
@@ -239,6 +267,19 @@ export default function RadioPlayer({
           >
             {isPlaying ? "⏸ 一時停止" : "▶ 再生"}
           </button>
+
+          <div className="mt-3 text-sm text-yellow-300">
+            {statusMessage}
+          </div>
+
+          <a
+            href={audioUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 block text-xs text-blue-300 underline break-all"
+          >
+            音声ファイルを直接開く
+          </a>
 
           <div className="mt-4">
             <input
