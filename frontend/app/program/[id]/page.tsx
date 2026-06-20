@@ -24,9 +24,19 @@ type Episode = {
   updated_at: number;
 };
 
+function safeDecode(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 async function getProgram(id: string): Promise<Program | null> {
+  const decodedId = safeDecode(id);
+
   const res = await fetch(
-    `${API_BASE_URL}/programs/${encodeURIComponent(id)}`,
+    `${API_BASE_URL}/programs/${encodeURIComponent(decodedId)}`,
     {
       cache: "no-store",
     }
@@ -40,8 +50,10 @@ async function getProgram(id: string): Promise<Program | null> {
 }
 
 async function getEpisodes(id: string): Promise<Episode[]> {
+  const decodedId = safeDecode(id);
+
   const res = await fetch(
-    `${API_BASE_URL}/programs/${encodeURIComponent(id)}/episodes`,
+    `${API_BASE_URL}/programs/${encodeURIComponent(decodedId)}/episodes`,
     {
       cache: "no-store",
     }
@@ -73,8 +85,10 @@ export default async function ProgramDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const program = await getProgram(id);
-  const episodes = await getEpisodes(id);
+  const decodedId = safeDecode(id);
+
+  const program = await getProgram(decodedId);
+  const episodes = await getEpisodes(decodedId);
 
   if (!program) {
     return (

@@ -10,7 +10,7 @@ services:
     ports:
       - "8001:8000"
 
-    frontend:
+  frontend:
     build: ./frontend
     container_name: radioflix-frontend
     restart: unless-stopped
