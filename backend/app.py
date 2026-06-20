@@ -1,6 +1,6 @@
+import base64
 import mimetypes
 import os
-import re
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -20,10 +20,8 @@ AUDIO_EXTENSIONS = {
 
 
 def make_program_id(raw_name: str) -> str:
-    program_id = raw_name.lower()
-    program_id = re.sub(r"[^a-z0-9ぁ-んァ-ン一-龥ー]+", "-", program_id)
-    program_id = program_id.strip("-")
-    return program_id
+    encoded = base64.urlsafe_b64encode(raw_name.encode("utf-8")).decode("ascii")
+    return encoded.rstrip("=")
 
 
 def normalize_title(title: str) -> str:
@@ -155,6 +153,18 @@ def get_recommendation_candidates():
     ]
 
 
+def recommendations():
+    recorded_titles = [
+        program["title"] for program in get_recorded_programs()
+    ]
+
+    return [
+        program
+        for program in get_recommendation_candidates()
+        if program["title"] not in recorded_titles
+    ]
+
+
 def get_all_programs():
     return get_recorded_programs() + recommendations()
 
@@ -233,16 +243,8 @@ def programs():
 
 @app.get("/recommendations")
 @app.get("/api/recommendations")
-def recommendations():
-    recorded_titles = [
-        program["title"] for program in get_recorded_programs()
-    ]
-
-    return [
-        program
-        for program in get_recommendation_candidates()
-        if program["title"] not in recorded_titles
-    ]
+def recommendation_api():
+    return recommendations()
 
 
 @app.get("/programs/{program_id}")
