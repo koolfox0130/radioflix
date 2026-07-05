@@ -80,10 +80,18 @@ export default function RadioPlayer({
     }
 
     function handleTimeUpdate() {
+      if (!audio) {
+        return;
+      }
+
       setCurrentTime(audio.currentTime || 0);
     }
 
     function handleLoadedMetadata() {
+      if (!audio) {
+        return;
+      }
+
       setDuration(audio.duration || 0);
       setStatusMessage("音声データを読み込みました");
     }

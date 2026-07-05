@@ -1,210 +1,1295 @@
-import Link from "next/link";
-import ScrollingTitle from "./components/ScrollingTitle";
+"use client";
 
-const API_BASE_URL =
-  process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
-
-async function getPrograms() {
-  const res = await fetch(`${API_BASE_URL}/programs`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    return [];
-  }
-
-  return res.json();
-}
-
-async function getRecommendations() {
-  const res = await fetch(`${API_BASE_URL}/recommendations`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    return [];
-  }
-
-  return res.json();
-}
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Program = {
   id: string;
   title: string;
-  network: string;
-  category: string;
-  reason?: string;
+  network?: string;
+  category?: string;
   raw_name?: string;
+  thumbnail_url?: string;
 };
 
-function getCardWidth(program: Program) {
-  const length = Array.from(program.title).length;
-
-  if (program.category === "JUNK") {
-    return 235;
-  }
-
-  if (length <= 6) {
-    return 185;
-  }
-
-  if (length <= 10) {
-    return 215;
-  }
-
-  if (length <= 14) {
-    return 235;
-  }
-
-  return 255;
-}
-
-function ProgramCard({
-  program,
-  showReason = false,
-}: {
-  program: Program;
-  showReason?: boolean;
-}) {
-  const cardWidth = getCardWidth(program);
-
-  return (
-    <Link
-      href={`/program/${encodeURIComponent(program.id)}`}
-      style={{
-        minWidth: `${cardWidth}px`,
-        maxWidth: `${cardWidth}px`,
-      }}
-      className="bg-[#232428] border border-[#34363b] rounded-2xl h-[160px] shrink-0 p-4 flex flex-col justify-between shadow-xl active:scale-95 transition"
-    >
-      <div className="min-w-0 w-full">
-        <ScrollingTitle
-          text={program.title}
-          className="text-base font-bold leading-snug"
-        />
-
-        {showReason && program.reason && (
-          <div className="text-xs text-zinc-400 mt-2 leading-relaxed line-clamp-2">
-            {program.reason}
-          </div>
-        )}
-      </div>
-
-      <div className="min-w-0 w-full">
-        <div className="text-xs text-zinc-300 truncate">
-          {program.network || "不明"}
-        </div>
-
-        <div className="inline-block text-xs text-yellow-300 bg-yellow-300/10 px-2 py-1 rounded-full mt-2">
-          {program.category || "その他"}
-        </div>
-      </div>
-    </Link>
-  );
-}
-
-function ProgramRow({
-  title,
-  subtitle,
-  programs,
-  showReason = false,
-}: {
+type Episode = {
+  filename: string;
   title: string;
-  subtitle?: string;
-  programs: Program[];
-  showReason?: boolean;
-}) {
-  if (!programs || programs.length === 0) {
+  size: number;
+  updated_at: number;
+  thumbnail_url?: string;
+  audio_url?: string;
+};
+
+type PlaybackStatus = "未聴" | "途中" | "聴了";
+
+type PlaybackInfo = {
+  currentTime: number;
+  duration: number;
+  updatedAt: number;
+};
+
+type ContinueItem = {
+  program: Program;
+  episode: Episode;
+  playbackInfo: PlaybackInfo;
+  progress: number;
+};
+
+const favoriteProgramNames = [
+  "爆笑問題カーボーイ",
+  "霜降り明星ANN",
+  "マヂカルラブリーANN0",
+  "山里亮太の不毛な議論",
+  "GURU-GURU!",
+  "ヤーレンズANN0",
+];
+
+function getDisplayTitle(program: Program) {
+  return program.title
+    ?.replace(/^LFR_/, "")
+    .replace(/^TBS_/, "")
+    .replace(/^JUNK-/, "")
+    .replace(/_/g, " ")
+    .trim();
+}
+
+function getApiUrl(apiBaseUrl: string, path?: string) {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  return `${apiBaseUrl}${path}`;
+}
+
+function formatFileSize(size: number) {
+  if (!size || size <= 0) return "";
+
+  const mb = size / 1024 / 1024;
+
+  if (mb >= 1000) {
+    return `${(mb / 1024).toFixed(1)}GB`;
+  }
+
+  return `${mb.toFixed(0)}MB`;
+}
+
+function formatTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const restSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(
+      restSeconds
+    ).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(restSeconds).padStart(2, "0")}`;
+}
+
+function formatUpdatedAt(updatedAt: number) {
+  if (!updatedAt) return "日付不明";
+
+  const date = new Date(updatedAt * 1000);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}/${month}/${day}`;
+}
+
+function getEpisodeDateParts(episode: Episode) {
+  const text = `${episode.filename} ${episode.title}`;
+
+  const compactMatch = text.match(/(20\d{2})(\d{2})(\d{2})/);
+
+  if (compactMatch) {
+    return {
+      year: Number(compactMatch[1]),
+      month: Number(compactMatch[2]),
+      day: Number(compactMatch[3]),
+    };
+  }
+
+  const separatedMatch = text.match(
+    /(20\d{2})[\/\-_年.](\d{1,2})[\/\-_月.](\d{1,2})/
+  );
+
+  if (separatedMatch) {
+    return {
+      year: Number(separatedMatch[1]),
+      month: Number(separatedMatch[2]),
+      day: Number(separatedMatch[3]),
+    };
+  }
+
+  return null;
+}
+
+function getEpisodeDate(episode: Episode) {
+  const parts = getEpisodeDateParts(episode);
+
+  if (!parts) {
+    return formatUpdatedAt(episode.updated_at);
+  }
+
+  return `${parts.year}/${String(parts.month).padStart(2, "0")}/${String(
+    parts.day
+  ).padStart(2, "0")}`;
+}
+
+function getEpisodeWeekday(episode: Episode) {
+  const parts = getEpisodeDateParts(episode);
+
+  if (!parts) return "";
+
+  const date = new Date(parts.year, parts.month - 1, parts.day);
+
+  if (Number.isNaN(date.getTime())) return "";
+
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+
+  return `${weekdays[date.getDay()]}曜`;
+}
+
+function getEpisodeDisplayTitle(episode: Episode) {
+  return episode.title
+    .replace(/_/g, " ")
+    .replace(/\.m4a$/i, "")
+    .replace(/\.mp3$/i, "")
+    .replace(/\.aac$/i, "")
+    .replace(/\.wav$/i, "")
+    .trim();
+}
+
+function getPlaybackStorageKey(program: Program, episode: Episode) {
+  return `radioflix-position:${program.id}:${episode.filename}`;
+}
+
+function getSavedPlaybackInfo(
+  program: Program | null,
+  episode: Episode
+): PlaybackInfo | null {
+  if (!program) return null;
+  if (typeof window === "undefined") return null;
+
+  const key = getPlaybackStorageKey(program, episode);
+  const rawValue = window.localStorage.getItem(key);
+
+  if (!rawValue) return null;
+
+  try {
+    const parsed = JSON.parse(rawValue);
+
+    return {
+      currentTime: Number(parsed.currentTime ?? 0),
+      duration: Number(parsed.duration ?? 0),
+      updatedAt: Number(parsed.updatedAt ?? 0),
+    };
+  } catch {
     return null;
   }
+}
+
+function getEpisodePlaybackState(program: Program | null, episode: Episode) {
+  const saved = getSavedPlaybackInfo(program, episode);
+
+  if (!saved) {
+    return {
+      status: "未聴" as PlaybackStatus,
+      progress: 0,
+    };
+  }
+
+  const currentTime = Number.isFinite(saved.currentTime)
+    ? saved.currentTime
+    : 0;
+  const duration = Number.isFinite(saved.duration) ? saved.duration : 0;
+
+  if (currentTime < 5) {
+    return {
+      status: "未聴" as PlaybackStatus,
+      progress: 0,
+    };
+  }
+
+  if (duration > 0) {
+    const progress = Math.min(Math.max(currentTime / duration, 0), 1);
+
+    if (progress >= 0.95 || duration - currentTime <= 60) {
+      return {
+        status: "聴了" as PlaybackStatus,
+        progress: 1,
+      };
+    }
+
+    return {
+      status: "途中" as PlaybackStatus,
+      progress,
+    };
+  }
+
+  return {
+    status: "途中" as PlaybackStatus,
+    progress: 0.05,
+  };
+}
+
+function getStatusBadgeClass(status: PlaybackStatus) {
+  if (status === "聴了") {
+    return "bg-zinc-700 px-3 py-1 text-xs font-bold text-zinc-300";
+  }
+
+  if (status === "途中") {
+    return "bg-amber-500/15 px-3 py-1 text-xs font-bold text-amber-300";
+  }
+
+  return "bg-emerald-500/15 px-3 py-1 text-xs font-bold text-emerald-300";
+}
+
+function ProgramImage({
+  apiBaseUrl,
+  program,
+  size = "large",
+}: {
+  apiBaseUrl: string;
+  program: Program;
+  size?: "small" | "large" | "hero";
+}) {
+  const [hasError, setHasError] = useState(false);
+  const imageUrl = getApiUrl(apiBaseUrl, program.thumbnail_url);
+
+  const sizeClass =
+    size === "small"
+      ? "h-16 w-16 rounded-2xl"
+      : size === "hero"
+      ? "h-48 w-full rounded-b-3xl"
+      : "h-32 w-full rounded-3xl";
+
+  if (!imageUrl || hasError) {
+    return (
+      <div
+        className={`${sizeClass} flex items-center justify-center bg-zinc-800 text-xs font-bold text-zinc-500`}
+      >
+        RadioFlix
+      </div>
+    );
+  }
 
   return (
-    <section className="mb-9">
-      <div className="mb-3">
-        <h2 className="text-2xl font-bold">{title}</h2>
+    <img
+      src={imageUrl}
+      alt={program.title}
+      className={`${sizeClass} object-cover`}
+      onError={() => setHasError(true)}
+    />
+  );
+}
 
-        {subtitle && (
-          <p className="text-sm text-zinc-400 mt-1">
-            {subtitle}
-          </p>
-        )}
+function EpisodeImage({
+  apiBaseUrl,
+  episode,
+}: {
+  apiBaseUrl: string;
+  episode: Episode;
+}) {
+  const [hasError, setHasError] = useState(false);
+  const imageUrl = getApiUrl(apiBaseUrl, episode.thumbnail_url);
+
+  if (!imageUrl || hasError) {
+    return (
+      <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl bg-zinc-700 text-xs font-bold text-zinc-400">
+        Radio
       </div>
+    );
+  }
 
-      <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {programs.map((program: Program) => (
-          <ProgramCard
-            key={`${title}-${program.id}`}
-            program={program}
-            showReason={showReason}
+  return (
+    <img
+      src={imageUrl}
+      alt={episode.title}
+      className="h-20 w-20 shrink-0 rounded-2xl object-cover"
+      onError={() => setHasError(true)}
+    />
+  );
+}
+
+function ScrollingTitle({ text }: { text: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLSpanElement | null>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    function checkOverflow() {
+      if (!containerRef.current || !contentRef.current) return;
+
+      setIsOverflowing(
+        contentRef.current.scrollWidth > containerRef.current.clientWidth
+      );
+    }
+
+    checkOverflow();
+
+    const timeoutId = window.setTimeout(checkOverflow, 100);
+    window.addEventListener("resize", checkOverflow);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("resize", checkOverflow);
+    };
+  }, [text]);
+
+  if (!isOverflowing) {
+    return (
+      <div
+        ref={containerRef}
+        className="w-full overflow-hidden whitespace-nowrap text-lg font-bold leading-tight text-zinc-100"
+      >
+        <span ref={contentRef} className="block truncate">
+          {text}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full overflow-hidden whitespace-nowrap text-lg font-bold leading-tight text-zinc-100"
+    >
+      <div key={text} className="radioflix-marquee-track">
+        <span ref={contentRef} className="inline-block pr-12">
+          {text}
+        </span>
+        <span className="inline-block pr-12">{text}</span>
+      </div>
+    </div>
+  );
+}
+
+function GlobalStyles() {
+  return (
+    <style jsx global>{`
+      @keyframes radioflix-marquee {
+        0% {
+          transform: translateX(0);
+        }
+        100% {
+          transform: translateX(-50%);
+        }
+      }
+
+      .radioflix-marquee-track {
+        display: inline-flex;
+        min-width: max-content;
+        white-space: nowrap;
+        animation-name: radioflix-marquee;
+        animation-duration: 18s;
+        animation-timing-function: linear;
+        animation-iteration-count: infinite;
+        animation-delay: 2s;
+      }
+    `}</style>
+  );
+}
+
+export default function Home() {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [programs, setPrograms] = useState<Program[]>([]);
+  const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
+  const [episodes, setEpisodes] = useState<Episode[]>([]);
+  const [selectedEpisode, setSelectedEpisode] = useState<Episode | null>(null);
+  const [continueItem, setContinueItem] = useState<ContinueItem | null>(null);
+  const [continueLoading, setContinueLoading] = useState(false);
+
+  const [loading, setLoading] = useState(true);
+  const [episodesLoading, setEpisodesLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [episodesError, setEpisodesError] = useState("");
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [shouldAutoPlay, setShouldAutoPlay] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+
+  const apiBaseUrl = "";
+
+  useEffect(() => {
+    const savedRate = window.localStorage.getItem("radioflix-playback-rate");
+
+    if (savedRate === "1.2") {
+      setPlaybackRate(1.2);
+    }
+  }, []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    audio.playbackRate = playbackRate;
+    window.localStorage.setItem("radioflix-playback-rate", String(playbackRate));
+  }, [playbackRate]);
+
+  useEffect(() => {
+    async function loadPrograms() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/programs`);
+
+        if (!response.ok) {
+          throw new Error("番組一覧を取得できませんでした");
+        }
+
+        const data = await response.json();
+        setPrograms(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error(err);
+        setError("NASの録音一覧を取得できませんでした");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadPrograms();
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    if (!audioRef.current || !selectedEpisode) return;
+
+    audioRef.current.load();
+  }, [selectedEpisode]);
+
+  useEffect(() => {
+    if (programs.length === 0) return;
+
+    let cancelled = false;
+
+    async function loadContinueItem() {
+      setContinueLoading(true);
+
+      try {
+        const allEpisodeGroups = await Promise.all(
+          programs.map(async (program) => {
+            try {
+              const response = await fetch(
+                `${apiBaseUrl}/programs/${program.id}/episodes`
+              );
+
+              if (!response.ok) {
+                return {
+                  program,
+                  episodes: [] as Episode[],
+                };
+              }
+
+              const data = await response.json();
+
+              return {
+                program,
+                episodes: Array.isArray(data) ? (data as Episode[]) : [],
+              };
+            } catch {
+              return {
+                program,
+                episodes: [] as Episode[],
+              };
+            }
+          })
+        );
+
+        const candidates: ContinueItem[] = [];
+
+        for (const group of allEpisodeGroups) {
+          for (const episode of group.episodes) {
+            const playbackInfo = getSavedPlaybackInfo(group.program, episode);
+            const playbackState = getEpisodePlaybackState(
+              group.program,
+              episode
+            );
+
+            if (!playbackInfo) continue;
+            if (playbackState.status !== "途中") continue;
+
+            candidates.push({
+              program: group.program,
+              episode,
+              playbackInfo,
+              progress: playbackState.progress,
+            });
+          }
+        }
+
+        candidates.sort(
+          (a, b) => b.playbackInfo.updatedAt - a.playbackInfo.updatedAt
+        );
+
+        if (!cancelled) {
+          setContinueItem(candidates[0] ?? null);
+        }
+      } finally {
+        if (!cancelled) {
+          setContinueLoading(false);
+        }
+      }
+    }
+
+    loadContinueItem();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [programs, apiBaseUrl]);
+
+  const favoritePrograms = useMemo(() => {
+    return favoriteProgramNames
+      .map((favoriteName) =>
+        programs.find((program) => program.title.includes(favoriteName))
+      )
+      .filter((program): program is Program => Boolean(program));
+  }, [programs]);
+
+  const otherPrograms = useMemo(() => {
+    return programs.filter(
+      (program) =>
+        !favoritePrograms.some((favorite) => favorite.id === program.id)
+    );
+  }, [programs, favoritePrograms]);
+
+  function getPlaybackKey(episode: Episode) {
+    if (!selectedProgram) return "";
+    return getPlaybackStorageKey(selectedProgram, episode);
+  }
+
+  function savePlaybackPosition(
+    episode: Episode,
+    nextCurrentTime: number,
+    nextDuration: number
+  ) {
+    const playbackKey = getPlaybackKey(episode);
+
+    if (!playbackKey || !selectedProgram) return;
+
+    const nextPlaybackInfo = {
+      currentTime: nextCurrentTime,
+      duration: nextDuration,
+      updatedAt: Date.now(),
+    };
+
+    window.localStorage.setItem(playbackKey, JSON.stringify(nextPlaybackInfo));
+
+    const playbackState = getEpisodePlaybackState(selectedProgram, episode);
+
+    if (playbackState.status === "途中") {
+      setContinueItem({
+        program: selectedProgram,
+        episode,
+        playbackInfo: nextPlaybackInfo,
+        progress: playbackState.progress,
+      });
+    }
+  }
+
+  async function openProgram(
+    program: Program,
+    options?: {
+      episodeFilename?: string;
+      autoPlay?: boolean;
+    }
+  ) {
+    setSelectedProgram(program);
+    setEpisodes([]);
+    setSelectedEpisode(null);
+    setEpisodesError("");
+    setEpisodesLoading(true);
+    setIsPlaying(false);
+    setDuration(0);
+    setCurrentTime(0);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/programs/${program.id}/episodes`
+      );
+
+      if (!response.ok) {
+        throw new Error("録音一覧を取得できませんでした");
+      }
+
+      const data = await response.json();
+      const nextEpisodes = Array.isArray(data) ? (data as Episode[]) : [];
+
+      setEpisodes(nextEpisodes);
+
+      if (options?.episodeFilename) {
+        const targetEpisode = nextEpisodes.find(
+          (episode) => episode.filename === options.episodeFilename
+        );
+
+        if (targetEpisode) {
+          setSelectedEpisode(targetEpisode);
+          setShouldAutoPlay(options.autoPlay ?? true);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setEpisodesError("この番組の録音一覧を取得できませんでした");
+    } finally {
+      setEpisodesLoading(false);
+    }
+  }
+
+  function openContinueItem() {
+    if (!continueItem) return;
+
+    openProgram(continueItem.program, {
+      episodeFilename: continueItem.episode.filename,
+      autoPlay: true,
+    });
+  }
+
+  function closeProgram() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    setSelectedProgram(null);
+    setEpisodes([]);
+    setSelectedEpisode(null);
+    setEpisodesError("");
+    setIsPlaying(false);
+    setDuration(0);
+    setCurrentTime(0);
+  }
+
+  function selectEpisode(episode: Episode, autoPlay = true) {
+    setSelectedEpisode(episode);
+    setShouldAutoPlay(autoPlay);
+    setCurrentTime(0);
+    setDuration(0);
+  }
+
+  async function togglePlay() {
+    const audio = audioRef.current;
+
+    if (!audio || !selectedEpisode) return;
+
+    if (audio.paused) {
+      try {
+        audio.playbackRate = playbackRate;
+        await audio.play();
+        setIsPlaying(true);
+      } catch (err) {
+        console.error(err);
+      }
+    } else {
+      audio.pause();
+      setIsPlaying(false);
+    }
+  }
+
+  function togglePlaybackRate() {
+    const nextRate = playbackRate === 1 ? 1.2 : 1;
+
+    setPlaybackRate(nextRate);
+
+    const audio = audioRef.current;
+
+    if (audio) {
+      audio.playbackRate = nextRate;
+    }
+  }
+
+  function skip(seconds: number) {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    const nextTime = Math.min(
+      Math.max(audio.currentTime + seconds, 0),
+      audio.duration || audio.currentTime + seconds
+    );
+
+    audio.currentTime = nextTime;
+    setCurrentTime(nextTime);
+
+    if (selectedEpisode) {
+      savePlaybackPosition(selectedEpisode, nextTime, audio.duration || 0);
+    }
+  }
+
+  function seek(seconds: number) {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    audio.currentTime = seconds;
+    setCurrentTime(seconds);
+
+    if (selectedEpisode) {
+      savePlaybackPosition(selectedEpisode, seconds, audio.duration || 0);
+    }
+  }
+
+  function selectAdjacentEpisode(direction: "older" | "newer") {
+    if (!selectedEpisode) return;
+
+    const currentIndex = episodes.findIndex(
+      (episode) => episode.filename === selectedEpisode.filename
+    );
+
+    if (currentIndex < 0) return;
+
+    const nextIndex =
+      direction === "older" ? currentIndex + 1 : currentIndex - 1;
+
+    if (nextIndex < 0 || nextIndex >= episodes.length) return;
+
+    selectEpisode(episodes[nextIndex], true);
+  }
+
+  function handleLoadedMetadata() {
+    const audio = audioRef.current;
+
+    if (!audio || !selectedEpisode) return;
+
+    audio.playbackRate = playbackRate;
+
+    const nextDuration = audio.duration || 0;
+    setDuration(nextDuration);
+
+    const playbackKey = getPlaybackKey(selectedEpisode);
+    const savedPositionText = playbackKey
+      ? window.localStorage.getItem(playbackKey)
+      : null;
+
+    if (savedPositionText) {
+      try {
+        const savedPosition = JSON.parse(savedPositionText);
+        const savedTime = Number(savedPosition.currentTime ?? 0);
+
+        if (
+          Number.isFinite(savedTime) &&
+          savedTime > 5 &&
+          savedTime < nextDuration - 10
+        ) {
+          audio.currentTime = savedTime;
+          setCurrentTime(savedTime);
+        }
+      } catch {
+        // 保存データが壊れていた場合は無視
+      }
+    }
+
+    if (shouldAutoPlay) {
+      audio
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch((err) => {
+          console.error(err);
+          setIsPlaying(false);
+        });
+    }
+  }
+
+  function handleTimeUpdate() {
+    const audio = audioRef.current;
+
+    if (!audio || !selectedEpisode) return;
+
+    const nextCurrentTime = audio.currentTime || 0;
+    const nextDuration = audio.duration || 0;
+
+    setCurrentTime(nextCurrentTime);
+    setDuration(nextDuration);
+
+    savePlaybackPosition(selectedEpisode, nextCurrentTime, nextDuration);
+  }
+
+  function handleEnded() {
+    const audio = audioRef.current;
+
+    setIsPlaying(false);
+
+    if (!audio || !selectedEpisode) return;
+
+    const nextDuration = audio.duration || duration || 0;
+
+    setCurrentTime(nextDuration);
+    savePlaybackPosition(selectedEpisode, nextDuration, nextDuration);
+  }
+
+  const selectedEpisodeAudioUrl = selectedEpisode
+    ? getApiUrl(apiBaseUrl, selectedEpisode.audio_url)
+    : "";
+
+  const selectedEpisodeIndex = selectedEpisode
+    ? episodes.findIndex(
+        (episode) => episode.filename === selectedEpisode.filename
+      )
+    : -1;
+
+  const hasOlderEpisode =
+    selectedEpisodeIndex >= 0 && selectedEpisodeIndex < episodes.length - 1;
+
+  const hasNewerEpisode = selectedEpisodeIndex > 0;
+
+  if (selectedProgram) {
+    return (
+      <>
+        <GlobalStyles />
+
+        <main className="min-h-screen bg-zinc-950 text-zinc-100">
+          <div className="mx-auto max-w-md pb-72">
+            <div className="relative">
+              <ProgramImage
+                apiBaseUrl={apiBaseUrl}
+                program={selectedProgram}
+                size="hero"
+              />
+
+              <button
+                onClick={closeProgram}
+                className="absolute left-4 top-4 rounded-full bg-black/60 px-4 py-2 text-sm font-bold text-white backdrop-blur"
+              >
+                ← 戻る
+              </button>
+            </div>
+
+            <div className="px-4 pt-5">
+              <p className="text-sm text-zinc-400">
+                {selectedProgram.network ?? "RadioFlix"} /{" "}
+                {selectedProgram.category ?? "録音番組"}
+              </p>
+
+              <h1 className="mt-2 text-3xl font-bold tracking-tight">
+                {getDisplayTitle(selectedProgram)}
+              </h1>
+
+              <div className="mt-5 rounded-3xl bg-zinc-900 p-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold">録音一覧</h2>
+                  <span className="text-xs text-zinc-500">
+                    {episodes.length}件
+                  </span>
+                </div>
+
+                {episodesLoading && (
+                  <p className="mt-4 text-sm text-zinc-400">
+                    録音一覧を読み込み中...
+                  </p>
+                )}
+
+                {episodesError && (
+                  <p className="mt-4 rounded-2xl border border-red-500/40 bg-red-950/40 p-4 text-sm text-red-200">
+                    {episodesError}
+                  </p>
+                )}
+
+                {!episodesLoading &&
+                  !episodesError &&
+                  episodes.length === 0 && (
+                    <p className="mt-4 text-sm text-zinc-400">
+                      この番組の録音ファイルが見つかりませんでした。
+                    </p>
+                  )}
+
+                {!episodesLoading &&
+                  !episodesError &&
+                  episodes.length > 0 && (
+                    <div className="mt-4 space-y-3">
+                      {episodes.map((episode) => {
+                        const isSelected =
+                          selectedEpisode?.filename === episode.filename;
+
+                        const playbackState = getEpisodePlaybackState(
+                          selectedProgram,
+                          episode
+                        );
+
+                        const progressPercent = Math.round(
+                          playbackState.progress * 100
+                        );
+
+                        return (
+                          <button
+                            key={episode.filename}
+                            onClick={() => selectEpisode(episode, true)}
+                            className={`w-full rounded-2xl p-3 text-left transition active:scale-[0.99] ${
+                              isSelected
+                                ? "bg-zinc-700 ring-2 ring-zinc-400"
+                                : "bg-zinc-800"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <EpisodeImage
+                                apiBaseUrl={apiBaseUrl}
+                                episode={episode}
+                              />
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-zinc-500">
+                                    {getEpisodeDate(episode)}
+                                  </p>
+
+                                  {getEpisodeWeekday(episode) && (
+                                    <span className="rounded-full bg-zinc-700 px-2 py-0.5 text-xs font-bold text-zinc-300">
+                                      {getEpisodeWeekday(episode)}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <h3 className="mt-1 line-clamp-2 font-bold">
+                                  {getEpisodeDisplayTitle(episode)}
+                                </h3>
+
+                                <p className="mt-2 text-xs text-zinc-500">
+                                  {formatFileSize(episode.size)}
+                                </p>
+
+                                {playbackState.status !== "未聴" && (
+                                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-700">
+                                    <div
+                                      className={`h-full rounded-full ${
+                                        playbackState.status === "聴了"
+                                          ? "bg-zinc-400"
+                                          : "bg-amber-300"
+                                      }`}
+                                      style={{
+                                        width: `${progressPercent}%`,
+                                      }}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+
+                              <span
+                                className={`shrink-0 rounded-full ${getStatusBadgeClass(
+                                  playbackState.status
+                                )}`}
+                              >
+                                {playbackState.status}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+              </div>
+            </div>
+          </div>
+
+          <audio
+            ref={audioRef}
+            src={selectedEpisodeAudioUrl}
+            preload="metadata"
+            onLoadedMetadata={handleLoadedMetadata}
+            onTimeUpdate={handleTimeUpdate}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={handleEnded}
           />
-        ))}
-      </div>
-    </section>
-  );
-}
 
-export default async function Home() {
-  const programs: Program[] = await getPrograms();
-  const recommendations: Program[] = await getRecommendations();
+          {selectedEpisode && (
+            <div className="fixed bottom-14 left-0 right-0 z-40 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
+              <div className="mx-auto max-w-md px-4 py-3">
+                <div className="mb-3 flex items-start gap-3">
+                  <EpisodeImage
+                    apiBaseUrl={apiBaseUrl}
+                    episode={selectedEpisode}
+                  />
 
-  const annPrograms = programs.filter(
-    (program) => program.category === "ANN"
-  );
+                  <div className="min-w-0 flex-1">
+                    <p className="mb-1 text-xs text-zinc-500">
+                      {getEpisodeDate(selectedEpisode)}{" "}
+                      {getEpisodeWeekday(selectedEpisode)}
+                    </p>
 
-  const junkPrograms = programs.filter(
-    (program) => program.category === "JUNK"
-  );
+                    <ScrollingTitle
+                      text={getEpisodeDisplayTitle(selectedEpisode)}
+                    />
 
-  const otherPrograms = programs.filter(
-    (program) =>
-      program.category !== "ANN" &&
-      program.category !== "JUNK"
-  );
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <p className="text-xs text-zinc-500">
+                        {formatTime(currentTime)} / {formatTime(duration)}
+                      </p>
+
+                      <button
+                        onClick={togglePlaybackRate}
+                        className="shrink-0 rounded-2xl bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-100 active:scale-95"
+                        title="再生速度を切り替え"
+                      >
+                        {playbackRate.toFixed(1)}x
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <input
+                  type="range"
+                  min={0}
+                  max={duration || 0}
+                  value={Math.min(currentTime, duration || currentTime)}
+                  onChange={(event) => seek(Number(event.target.value))}
+                  className="mb-3 w-full"
+                />
+
+                <div className="grid grid-cols-5 items-center gap-2 text-sm">
+                  <button
+                    onClick={() => selectAdjacentEpisode("older")}
+                    disabled={!hasOlderEpisode}
+                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
+                  >
+                    ⏮
+                  </button>
+
+                  <button
+                    onClick={() => skip(-15)}
+                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
+                  >
+                    ↩15
+                  </button>
+
+                  <button
+                    onClick={togglePlay}
+                    className="rounded-2xl bg-zinc-100 px-2 py-3 text-lg font-bold text-zinc-950"
+                  >
+                    {isPlaying ? "⏸" : "▶"}
+                  </button>
+
+                  <button
+                    onClick={() => skip(30)}
+                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
+                  >
+                    30↪
+                  </button>
+
+                  <button
+                    onClick={() => selectAdjacentEpisode("newer")}
+                    disabled={!hasNewerEpisode}
+                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
+                  >
+                    ⏭
+                  </button>
+                </div>
+
+                <div className="mt-2 grid grid-cols-5 text-center text-[10px] text-zinc-500">
+                  <span>前の録音</span>
+                  <span>15秒戻る</span>
+                  <span>再生</span>
+                  <span>30秒送る</span>
+                  <span>次の録音</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
+            <div className="mx-auto grid max-w-md grid-cols-4 px-2 py-2 text-center text-xs text-zinc-400">
+              <button
+                onClick={closeProgram}
+                className="rounded-2xl px-2 py-2 font-bold text-zinc-100"
+              >
+                ホーム
+              </button>
+              <button className="rounded-2xl px-2 py-2">番組</button>
+              <button className="rounded-2xl px-2 py-2">未聴</button>
+              <button className="rounded-2xl px-2 py-2">検索</button>
+            </div>
+          </nav>
+        </main>
+      </>
+    );
+  }
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <div className="sticky top-0 z-10 bg-black/90 backdrop-blur px-4 pt-5 pb-4 border-b border-zinc-900">
-        <h1 className="text-3xl font-black tracking-tight">
-          📻 RadioFlix
-        </h1>
+    <>
+      <GlobalStyles />
 
-        <p className="text-sm text-zinc-400 mt-1">
-          芸人ラジオを見つける、自分専用ホーム
-        </p>
-      </div>
+      <main className="min-h-screen bg-zinc-950 text-zinc-100">
+        <div className="mx-auto max-w-md px-4 pb-24 pt-6">
+          <header className="mb-6">
+            <p className="text-sm text-zinc-400">NAS録音ラジオ</p>
+            <h1 className="text-3xl font-bold tracking-tight">RadioFlix</h1>
+            <p className="mt-2 text-sm text-zinc-400">
+              番組を選んで、録音一覧を開きます。
+            </p>
+          </header>
 
-      <div className="px-4 pt-4 pb-12">
-        <ProgramRow
-          title="あなたへのおすすめ"
-          subtitle="今の録音傾向から選んだ番組"
-          programs={recommendations}
-          showReason={true}
-        />
+          {loading && (
+            <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
+              録音一覧を読み込み中...
+            </div>
+          )}
 
-        <ProgramRow
-          title="録音中"
-          subtitle="NASに保存されている番組"
-          programs={programs}
-        />
+          {error && (
+            <div className="rounded-3xl border border-red-500/40 bg-red-950/40 p-5 text-sm text-red-200">
+              {error}
+            </div>
+          )}
 
-        <ProgramRow
-          title="ANN好き向け"
-          subtitle="ニッポン放送・ANN系"
-          programs={annPrograms}
-        />
+          {!loading && !error && (
+            <>
+              {continueItem && (
+                <section className="mb-8">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold">続きから聴く</h2>
+                    <span className="text-xs text-zinc-500">
+                      前回の続き
+                    </span>
+                  </div>
 
-        <ProgramRow
-          title="JUNK好き向け"
-          subtitle="TBSラジオ・JUNK系"
-          programs={junkPrograms}
-        />
+                  <button
+                    onClick={openContinueItem}
+                    className="w-full overflow-hidden rounded-3xl bg-zinc-900 text-left shadow-lg transition active:scale-[0.99]"
+                  >
+                    <EpisodeImage
+                      apiBaseUrl={apiBaseUrl}
+                      episode={continueItem.episode}
+                    />
 
-        <ProgramRow
-          title="その他の録音番組"
-          subtitle="J-WAVEなど"
-          programs={otherPrograms}
-        />
-      </div>
-    </main>
+                    <div className="p-5">
+                      <p className="text-xs text-zinc-500">
+                        {getDisplayTitle(continueItem.program)} /{" "}
+                        {getEpisodeDate(continueItem.episode)}{" "}
+                        {getEpisodeWeekday(continueItem.episode)}
+                      </p>
+
+                      <h3 className="mt-2 line-clamp-2 text-xl font-bold">
+                        {getEpisodeDisplayTitle(continueItem.episode)}
+                      </h3>
+
+                      <p className="mt-2 text-sm text-zinc-400">
+                        {formatTime(continueItem.playbackInfo.currentTime)} /{" "}
+                        {formatTime(continueItem.playbackInfo.duration)}
+                      </p>
+
+                      <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-700">
+                        <div
+                          className="h-full rounded-full bg-amber-300"
+                          style={{
+                            width: `${Math.round(
+                              continueItem.progress * 100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+
+                      <div className="mt-5 rounded-2xl bg-zinc-100 px-4 py-3 text-center font-bold text-zinc-950">
+                        ▶ 続きから再生
+                      </div>
+                    </div>
+                  </button>
+                </section>
+              )}
+
+              {!continueItem && continueLoading && (
+                <section className="mb-8">
+                  <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
+                    続きから聴く録音を確認中...
+                  </div>
+                </section>
+              )}
+
+              {favoritePrograms.length > 0 && (
+                <section className="mb-8">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold">お気に入り番組</h2>
+                    <span className="text-xs text-zinc-500">
+                      {favoritePrograms.length}件
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {favoritePrograms.map((program) => (
+                      <button
+                        key={program.id}
+                        onClick={() => openProgram(program)}
+                        className="overflow-hidden rounded-3xl bg-zinc-900 text-left transition active:scale-[0.99]"
+                      >
+                        <ProgramImage
+                          apiBaseUrl={apiBaseUrl}
+                          program={program}
+                          size="large"
+                        />
+
+                        <div className="p-3">
+                          <p className="text-xs text-zinc-500">
+                            {program.category ?? program.network ?? "録音"}
+                          </p>
+                          <h3 className="mt-1 line-clamp-2 font-bold">
+                            {getDisplayTitle(program)}
+                          </h3>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="mb-8">
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-lg font-bold">番組一覧</h2>
+                  <span className="text-xs text-zinc-500">
+                    {programs.length}件
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  {otherPrograms.map((program) => (
+                    <button
+                      key={program.id}
+                      onClick={() => openProgram(program)}
+                      className="w-full rounded-3xl bg-zinc-900 p-3 text-left transition active:scale-[0.99]"
+                    >
+                      <div className="flex items-center gap-4">
+                        <ProgramImage
+                          apiBaseUrl={apiBaseUrl}
+                          program={program}
+                          size="small"
+                        />
+
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-zinc-500">
+                            {program.category ?? program.network ?? "録音"}
+                          </p>
+                          <h3 className="mt-1 truncate font-bold">
+                            {getDisplayTitle(program)}
+                          </h3>
+                          <p className="mt-1 text-sm text-zinc-400">
+                            {program.network ?? "放送局不明"}
+                          </p>
+                        </div>
+
+                        <span className="shrink-0 text-zinc-500">›</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+
+        <nav className="fixed bottom-0 left-0 right-0 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
+          <div className="mx-auto grid max-w-md grid-cols-4 px-2 py-2 text-center text-xs text-zinc-400">
+            <button className="rounded-2xl px-2 py-2 font-bold text-zinc-100">
+              ホーム
+            </button>
+            <button className="rounded-2xl px-2 py-2">番組</button>
+            <button className="rounded-2xl px-2 py-2">未聴</button>
+            <button className="rounded-2xl px-2 py-2">検索</button>
+          </div>
+        </nav>
+      </main>
+    </>
   );
 }
+
+
