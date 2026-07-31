@@ -541,4 +541,5 @@ def audio_file(program_id: str, filename: str):
         resolved_file,
         media_type=media_type or "audio/mp4",
         filename=resolved_file.name,
+        content_disposition_type="inline",
     )

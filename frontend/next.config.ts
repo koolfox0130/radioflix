@@ -1,31 +1,34 @@
 import type { NextConfig } from "next";
 
+const apiBaseUrl =
+  process.env.RADIOFLIX_API_URL ?? "http://127.0.0.1:8000";
+
 const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
         source: "/programs/:path*",
-        destination: "http://127.0.0.1:8000/programs/:path*",
+        destination: `${apiBaseUrl}/programs/:path*`,
       },
       {
         source: "/api/programs/:path*",
-        destination: "http://127.0.0.1:8000/api/programs/:path*",
+        destination: `${apiBaseUrl}/api/programs/:path*`,
       },
       {
         source: "/recommendations/:path*",
-        destination: "http://127.0.0.1:8000/recommendations/:path*",
+        destination: `${apiBaseUrl}/recommendations/:path*`,
       },
       {
         source: "/api/recommendations/:path*",
-        destination: "http://127.0.0.1:8000/api/recommendations/:path*",
+        destination: `${apiBaseUrl}/api/recommendations/:path*`,
       },
       {
         source: "/audio/:path*",
-        destination: "http://127.0.0.1:8000/audio/:path*",
+        destination: `${apiBaseUrl}/audio/:path*`,
       },
       {
         source: "/api/audio/:path*",
-        destination: "http://127.0.0.1:8000/api/audio/:path*",
+        destination: `${apiBaseUrl}/api/audio/:path*`,
       },
     ];
   },

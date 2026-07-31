@@ -415,6 +415,7 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState(0);
   const [shouldAutoPlay, setShouldAutoPlay] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [playbackError, setPlaybackError] = useState("");
 
   const apiBaseUrl = "";
 
@@ -608,6 +609,7 @@ export default function Home() {
     setIsPlaying(false);
     setDuration(0);
     setCurrentTime(0);
+    setPlaybackError("");
 
     try {
       const response = await fetch(
@@ -662,6 +664,7 @@ export default function Home() {
     setIsPlaying(false);
     setDuration(0);
     setCurrentTime(0);
+    setPlaybackError("");
   }
 
   function selectEpisode(episode: Episode, autoPlay = true) {
@@ -669,6 +672,7 @@ export default function Home() {
     setShouldAutoPlay(autoPlay);
     setCurrentTime(0);
     setDuration(0);
+    setPlaybackError("");
   }
 
   async function togglePlay() {
@@ -681,8 +685,13 @@ export default function Home() {
         audio.playbackRate = playbackRate;
         await audio.play();
         setIsPlaying(true);
+        setPlaybackError("");
       } catch (err) {
-        console.error(err);
+        console.error("音声の再生に失敗しました", err);
+        setIsPlaying(false);
+        setPlaybackError(
+          "音声を再生できませんでした。通信状況を確認して、もう一度お試しください。"
+        );
       }
     } else {
       audio.pause();
@@ -705,19 +714,37 @@ export default function Home() {
   function skip(seconds: number) {
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (
+      !audio ||
+      !selectedEpisode ||
+      audio.readyState === HTMLMediaElement.HAVE_NOTHING ||
+      !Number.isFinite(audio.currentTime)
+    ) {
+      return;
+    }
 
-    const nextTime = Math.min(
-      Math.max(audio.currentTime + seconds, 0),
-      audio.duration || audio.currentTime + seconds
-    );
+    const audioDuration = audio.duration;
+    const hasValidDuration =
+      Number.isFinite(audioDuration) && audioDuration > 0;
+    const unclampedTime = Math.max(audio.currentTime + seconds, 0);
+    const nextTime = hasValidDuration
+      ? Math.min(unclampedTime, audioDuration)
+      : unclampedTime;
 
-    audio.currentTime = nextTime;
+    try {
+      audio.currentTime = nextTime;
+    } catch (err) {
+      console.error("音声の再生位置を変更できませんでした", err);
+      return;
+    }
+
     setCurrentTime(nextTime);
 
-    if (selectedEpisode) {
-      savePlaybackPosition(selectedEpisode, nextTime, audio.duration || 0);
-    }
+    savePlaybackPosition(
+      selectedEpisode,
+      nextTime,
+      hasValidDuration ? audioDuration : 0
+    );
   }
 
   function seek(seconds: number) {
@@ -788,12 +815,26 @@ export default function Home() {
         .play()
         .then(() => {
           setIsPlaying(true);
+          setPlaybackError("");
         })
         .catch((err) => {
-          console.error(err);
+          console.error("音声の自動再生に失敗しました", err);
           setIsPlaying(false);
+          setPlaybackError(
+            "音声を再生できませんでした。再生ボタンをもう一度押してください。"
+          );
         });
     }
+  }
+
+  function handleAudioError() {
+    const mediaError = audioRef.current?.error;
+
+    console.error("音声ファイルの読み込みに失敗しました", mediaError);
+    setIsPlaying(false);
+    setPlaybackError(
+      "音声ファイルを読み込めませんでした。別の録音を選ぶか、通信状況を確認してください。"
+    );
   }
 
   function handleTimeUpdate() {
@@ -991,9 +1032,13 @@ export default function Home() {
             preload="metadata"
             onLoadedMetadata={handleLoadedMetadata}
             onTimeUpdate={handleTimeUpdate}
-            onPlay={() => setIsPlaying(true)}
+            onPlay={() => {
+              setIsPlaying(true);
+              setPlaybackError("");
+            }}
             onPause={() => setIsPlaying(false)}
             onEnded={handleEnded}
+            onError={handleAudioError}
           />
 
           {selectedEpisode && (
@@ -1030,6 +1075,15 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+
+                {playbackError && (
+                  <p
+                    role="alert"
+                    className="mb-3 rounded-xl border border-red-500/40 bg-red-950/50 px-3 py-2 text-xs text-red-200"
+                  >
+                    {playbackError}
+                  </p>
+                )}
 
                 <input
                   type="range"
