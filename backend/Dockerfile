@@ -5,6 +5,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn
 
 COPY app.py /app/app.py
+COPY radioflix /app/radioflix
 
 EXPOSE 8000
 
