@@ -3,9 +3,8 @@ from pathlib import Path
 
 
 class ProgramService:
-    def __init__(self, radiko_dir: Path, recommendations):
+    def __init__(self, radiko_dir: Path):
         self.radiko_dir = radiko_dir
-        self.recommendations = recommendations
 
     def make_program_id(self, raw_name: str) -> str:
         encoded = base64.urlsafe_b64encode(raw_name.encode("utf-8")).decode("ascii")
@@ -87,7 +86,7 @@ class ProgramService:
         return sorted(programs, key=lambda x: x["title"])
 
     def get_all_programs(self):
-        return self.get_recorded_programs() + self.recommendations()
+        return self.get_recorded_programs()
 
     def find_program(self, program_id: str):
         for program in self.get_all_programs():
