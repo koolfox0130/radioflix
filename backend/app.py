@@ -1,9 +1,9 @@
-import base64
 import mimetypes
 import os
 from pathlib import Path
 from urllib.parse import quote, unquote
 
+from radioflix.services.program_service import ProgramService
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -57,89 +57,6 @@ THUMBNAIL_FILENAMES = {
     "Folder.png",
     "Folder.webp",
 }
-
-
-def make_program_id(raw_name: str) -> str:
-    encoded = base64.urlsafe_b64encode(raw_name.encode("utf-8")).decode("ascii")
-    return encoded.rstrip("=")
-
-
-def normalize_title(title: str) -> str:
-    return (
-        title
-        .replace("オールナイトニッポンX(クロス)", "ANNX")
-        .replace("オールナイトニッポンX", "ANNX")
-        .replace("オールナイトニッポン0(ZERO)", "ANN0")
-        .replace("オールナイトニッポン０(ZERO)", "ANN0")
-        .replace("オールナイトニッポンZERO", "ANN0")
-        .replace("オールナイトニッポン０", "ANN0")
-        .replace("オールナイトニッポン0", "ANN0")
-        .replace("オールナイトニッポン", "ANN")
-    )
-
-
-def parse_program_name(name: str):
-    network = ""
-    category = ""
-    title = name
-
-    if name.startswith("TBS_JUNK-"):
-        network = "TBS"
-        category = "JUNK"
-        title = name.replace("TBS_JUNK-", "")
-
-    elif name.startswith("LFR_"):
-        network = "ニッポン放送"
-        category = "ANN"
-        title = name.replace("LFR_", "")
-
-    elif name.startswith("FMJ_"):
-        network = "J-WAVE"
-        category = "GURU"
-        title = name.replace("FMJ_", "")
-
-    elif name.startswith("IBS_"):
-        network = "LuckyFM"
-        category = "ANN"
-        title = name.replace("IBS_", "")
-
-    elif name.startswith("JORF_"):
-        network = "ラジオ日本"
-        category = "その他"
-        title = name.replace("JORF_", "")
-
-    title = normalize_title(title)
-    program_id = make_program_id(name)
-
-    return {
-        "id": program_id,
-        "title": title,
-        "network": network,
-        "category": category,
-        "raw_name": name,
-        "thumbnail_url": f"/programs/{program_id}/thumbnail",
-    }
-
-
-def get_recorded_programs():
-    if not RADIKO_DIR.exists():
-        return []
-
-    programs = []
-
-    for p in RADIKO_DIR.iterdir():
-        if not p.is_dir():
-            continue
-
-        if p.name.startswith("."):
-            continue
-
-        if p.name in ["old", "TBS"]:
-            continue
-
-        programs.append(parse_program_name(p.name))
-
-    return sorted(programs, key=lambda x: x["title"])
 
 
 def get_recommendation_candidates():
@@ -203,7 +120,7 @@ def get_recommendation_candidates():
 
 def recommendations():
     recorded_titles = [
-        program["title"] for program in get_recorded_programs()
+        program["title"] for program in program_service.get_recorded_programs()
     ]
 
     return [
@@ -213,33 +130,7 @@ def recommendations():
     ]
 
 
-def get_all_programs():
-    return get_recorded_programs() + recommendations()
-
-
-def find_program(program_id: str):
-    for program in get_all_programs():
-        if program["id"] == program_id:
-            return program
-
-    return None
-
-
-def get_program_folder(program_id: str):
-    program = find_program(program_id)
-
-    if not program:
-        return None
-
-    if program["category"] == "おすすめ":
-        return None
-
-    folder = RADIKO_DIR / program["raw_name"]
-
-    if not folder.exists() or not folder.is_dir():
-        return None
-
-    return folder
+program_service = ProgramService(RADIKO_DIR, recommendations)
 
 
 def get_safe_file_path(folder: Path, filename: str):
@@ -262,7 +153,7 @@ def get_safe_file_path(folder: Path, filename: str):
 
 
 def get_thumbnail_file(program_id: str):
-    folder = get_program_folder(program_id)
+    folder = program_service.get_program_folder(program_id)
 
     if not folder:
         return None
@@ -340,7 +231,7 @@ def get_embedded_artwork(audio_file: Path):
 
 
 def get_episode_files(program_id: str):
-    folder = get_program_folder(program_id)
+    folder = program_service.get_program_folder(program_id)
 
     if not folder:
         return []
@@ -387,7 +278,7 @@ def root():
 @app.get("/programs")
 @app.get("/api/programs")
 def programs():
-    return get_recorded_programs()
+    return program_service.get_recorded_programs()
 
 
 @app.get("/recommendations")
@@ -399,7 +290,7 @@ def recommendation_api():
 @app.get("/programs/{program_id}")
 @app.get("/api/programs/{program_id}")
 def program_detail(program_id: str):
-    program = find_program(program_id)
+    program = program_service.find_program(program_id)
 
     if not program:
         raise HTTPException(status_code=404, detail="Program not found")
@@ -429,7 +320,7 @@ def program_thumbnail(program_id: str):
 @app.get("/programs/{program_id}/debug-files")
 @app.get("/api/programs/{program_id}/debug-files")
 def program_debug_files(program_id: str):
-    folder = get_program_folder(program_id)
+    folder = program_service.get_program_folder(program_id)
 
     if not folder:
         raise HTTPException(status_code=404, detail="Program folder not found")
@@ -466,7 +357,7 @@ def program_episodes(program_id: str):
 @app.get("/programs/{program_id}/episodes/{filename:path}/thumbnail")
 @app.get("/api/programs/{program_id}/episodes/{filename:path}/thumbnail")
 def episode_thumbnail(program_id: str, filename: str):
-    folder = get_program_folder(program_id)
+    folder = program_service.get_program_folder(program_id)
 
     if not folder:
         raise HTTPException(status_code=404, detail="Program folder not found")
@@ -522,7 +413,7 @@ def episode_thumbnail(program_id: str, filename: str):
 @app.get("/audio/{program_id}/{filename:path}")
 @app.get("/api/audio/{program_id}/{filename:path}")
 def audio_file(program_id: str, filename: str):
-    folder = get_program_folder(program_id)
+    folder = program_service.get_program_folder(program_id)
 
     if not folder:
         raise HTTPException(status_code=404, detail="Program folder not found")
