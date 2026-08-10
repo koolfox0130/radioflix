@@ -35,6 +35,11 @@ type ContinueItem = {
   progress: number;
 };
 
+type UnreadEpisode = {
+  program: Program;
+  episode: Episode;
+};
+
 const favoriteProgramNames = [
   "爆笑問題カーボーイ",
   "霜降り明星ANN",
@@ -404,6 +409,7 @@ export default function Home() {
   const [selectedEpisode, setSelectedEpisode] = useState<Episode | null>(null);
   const [continueItem, setContinueItem] = useState<ContinueItem | null>(null);
   const [continueLoading, setContinueLoading] = useState(false);
+  const [unreadEpisodes, setUnreadEpisodes] = useState<UnreadEpisode[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -503,6 +509,7 @@ export default function Home() {
         );
 
         const candidates: ContinueItem[] = [];
+        const unreadCandidates: UnreadEpisode[] = [];
 
         for (const group of allEpisodeGroups) {
           for (const episode of group.episodes) {
@@ -511,6 +518,13 @@ export default function Home() {
               group.program,
               episode
             );
+
+            if (playbackState.status === "未聴") {
+              unreadCandidates.push({
+                program: group.program,
+                episode,
+              });
+            }
 
             if (!playbackInfo) continue;
             if (playbackState.status !== "途中") continue;
@@ -527,9 +541,13 @@ export default function Home() {
         candidates.sort(
           (a, b) => b.playbackInfo.updatedAt - a.playbackInfo.updatedAt
         );
+        unreadCandidates.sort(
+          (a, b) => b.episode.updated_at - a.episode.updated_at
+        );
 
         if (!cancelled) {
           setContinueItem(candidates[0] ?? null);
+          setUnreadEpisodes(unreadCandidates);
         }
       } finally {
         if (!cancelled) {
@@ -583,6 +601,27 @@ export default function Home() {
     window.localStorage.setItem(playbackKey, JSON.stringify(nextPlaybackInfo));
 
     const playbackState = getEpisodePlaybackState(selectedProgram, episode);
+
+    setUnreadEpisodes((currentUnreadEpisodes) => {
+      const currentIndex = currentUnreadEpisodes.findIndex(
+        (item) =>
+          item.program.id === selectedProgram.id &&
+          item.episode.filename === episode.filename
+      );
+
+      if (playbackState.status === "未聴") {
+        if (currentIndex >= 0) return currentUnreadEpisodes;
+
+        return [
+          ...currentUnreadEpisodes,
+          { program: selectedProgram, episode },
+        ].sort((a, b) => b.episode.updated_at - a.episode.updated_at);
+      }
+
+      if (currentIndex < 0) return currentUnreadEpisodes;
+
+      return currentUnreadEpisodes.filter((_, index) => index !== currentIndex);
+    });
 
     if (playbackState.status === "途中") {
       setContinueItem({
@@ -1247,6 +1286,55 @@ export default function Home() {
                 <section className="mb-8">
                   <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
                     続きから聴く録音を確認中...
+                  </div>
+                </section>
+              )}
+
+              {unreadEpisodes.length > 0 && (
+                <section className="mb-8">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold">未聴エピソード</h2>
+                    <span className="text-xs text-zinc-500">
+                      {unreadEpisodes.length}件
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {unreadEpisodes.map((item) => (
+                      <button
+                        key={`${item.program.id}:${item.episode.filename}`}
+                        onClick={() =>
+                          openProgram(item.program, {
+                            episodeFilename: item.episode.filename,
+                            autoPlay: true,
+                          })
+                        }
+                        className="w-full rounded-3xl bg-zinc-900 p-3 text-left transition active:scale-[0.99]"
+                      >
+                        <div className="flex items-center gap-4">
+                          <ProgramImage
+                            apiBaseUrl={apiBaseUrl}
+                            program={item.program}
+                            size="small"
+                          />
+
+                          <div className="min-w-0 flex-1">
+                            <h3 className="truncate font-bold">
+                              {getDisplayTitle(item.program)}
+                            </h3>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {getEpisodeDate(item.episode)}{" "}
+                              {getEpisodeWeekday(item.episode)}
+                            </p>
+                            <p className="mt-1 line-clamp-2 text-sm text-zinc-400">
+                              {getEpisodeDisplayTitle(item.episode)}
+                            </p>
+                          </div>
+
+                          <span className="shrink-0 text-zinc-500">›</span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </section>
               )}
