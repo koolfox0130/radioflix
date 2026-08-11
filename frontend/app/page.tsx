@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Program = {
@@ -422,8 +424,31 @@ export default function Home() {
   const [shouldAutoPlay, setShouldAutoPlay] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [playbackError, setPlaybackError] = useState("");
+  const [autoOpenQueryHandled, setAutoOpenQueryHandled] = useState(false);
 
   const apiBaseUrl = "";
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (autoOpenQueryHandled || programs.length === 0) return;
+
+    const programId = searchParams.get("programId");
+    const episodeFilename = searchParams.get("episodeFilename");
+    const autoPlay = searchParams.get("autoPlay") === "1";
+
+    if (!programId || !episodeFilename) return;
+
+    const targetProgram = programs.find((program) => program.id === programId);
+
+    if (!targetProgram) return;
+
+    openProgram(targetProgram, {
+      episodeFilename,
+      autoPlay,
+    });
+
+    setAutoOpenQueryHandled(true);
+  }, [programs, searchParams, autoOpenQueryHandled]);
 
   useEffect(() => {
     const savedRate = window.localStorage.getItem("radioflix-playback-rate");
@@ -1192,7 +1217,9 @@ export default function Home() {
                 ホーム
               </button>
               <button className="rounded-2xl px-2 py-2">番組</button>
-              <button className="rounded-2xl px-2 py-2">未聴</button>
+              <Link href="/unread" className="rounded-2xl px-2 py-2">
+                未聴
+              </Link>
               <button className="rounded-2xl px-2 py-2">検索</button>
             </div>
           </nav>
@@ -1421,11 +1448,13 @@ export default function Home() {
 
         <nav className="fixed bottom-0 left-0 right-0 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
           <div className="mx-auto grid max-w-md grid-cols-4 px-2 py-2 text-center text-xs text-zinc-400">
-            <button className="rounded-2xl px-2 py-2 font-bold text-zinc-100">
+            <Link href="/" className="rounded-2xl px-2 py-2 font-bold text-zinc-100">
               ホーム
-            </button>
+            </Link>
             <button className="rounded-2xl px-2 py-2">番組</button>
-            <button className="rounded-2xl px-2 py-2">未聴</button>
+            <Link href="/unread" className="rounded-2xl px-2 py-2">
+              未聴
+            </Link>
             <button className="rounded-2xl px-2 py-2">検索</button>
           </div>
         </nav>
