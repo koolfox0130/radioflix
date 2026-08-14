@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 type Program = {
   id: string;
@@ -402,7 +402,7 @@ function GlobalStyles() {
   );
 }
 
-export default function Home() {
+function HomeContent() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -1092,7 +1092,7 @@ export default function Home() {
 
           <audio
             ref={audioRef}
-            src={selectedEpisodeAudioUrl}
+            src={selectedEpisodeAudioUrl || undefined}
             preload="metadata"
             onLoadedMetadata={handleLoadedMetadata}
             onTimeUpdate={handleTimeUpdate}
@@ -1463,4 +1463,10 @@ export default function Home() {
   );
 }
 
-
+export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
+  );
+}
