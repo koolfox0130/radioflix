@@ -1236,7 +1236,9 @@ function HomeContent() {
         <div className="mx-auto max-w-md px-4 pb-24 pt-6">
           <header className="mb-6">
             <p className="text-sm text-zinc-400">NAS録音ラジオ</p>
-            <h1 className="text-3xl font-bold tracking-tight">RadioFlix</h1>
+            <h1 className="text-3xl font-bold tracking-tight">
+              <Link href="/">RadioFlix</Link>
+            </h1>
             <p className="mt-2 text-sm text-zinc-400">
               番組を選んで、録音一覧を開きます。
             </p>
