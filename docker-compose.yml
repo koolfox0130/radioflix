@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     environment:
       - RADIKO_DIR=/recordings
+      - LOCAL_AI_API_URL=http://local-ai-lab-api:8000
     volumes:
       - /volume1/@home/kool-fox/radiko_public/radiko:/recordings:ro
     ports:
