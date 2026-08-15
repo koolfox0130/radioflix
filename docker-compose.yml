@@ -9,6 +9,9 @@ services:
       - /volume1/@home/kool-fox/radiko_public/radiko:/recordings:ro
     ports:
       - "8001:8000"
+    networks:
+      - default
+      - local-ai-lab
 
   frontend:
     build: ./frontend
@@ -21,3 +24,8 @@ services:
       - RADIOFLIX_PUBLIC_API_URL=https://radioflix.kool-fox.com/api
     ports:
       - "3001:3000"
+
+networks:
+  local-ai-lab:
+    external: true
+    name: local-ai-lab
