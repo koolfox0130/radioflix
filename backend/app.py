@@ -5,6 +5,9 @@ from urllib.parse import quote, unquote
 
 from radioflix.services.program_service import ProgramService
 from radioflix.services.recommendation_service import RecommendationService
+from radioflix.services.ai_service import AIService
+from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -62,6 +65,7 @@ THUMBNAIL_FILENAMES = {
 
 program_service = ProgramService(RADIKO_DIR)
 recommendation_service = RecommendationService(program_service)
+ai_service = AIService()
 
 
 def get_safe_file_path(folder: Path, filename: str):
@@ -210,6 +214,45 @@ def root():
 @app.get("/api/programs")
 def programs():
     return program_service.get_recorded_programs()
+
+
+class RecommendationReasonRequest(BaseModel):
+    title: str
+    network: str = ""
+    existing_reason: str = ""
+    favorite_titles: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/ai/recommendation-reason")
+def recommendation_reason(request: RecommendationReasonRequest):
+    result = ai_service.recommendation_reason(
+        title=request.title,
+        network=request.network,
+        existing_reason=request.existing_reason,
+        favorite_titles=request.favorite_titles,
+    )
+
+    # invalid title -> 400
+    if not result.ok and result.error == "invalid_title":
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid_title"})
+
+    # AI unavailable reasons -> 503
+    unavailable_errors = {"memory_insufficient", "swap_insufficient", "disabled", "unreachable", "timeout"}
+    if not result.ok and result.error in unavailable_errors:
+        return JSONResponse(status_code=503, content={"ok": False, "error": result.error})
+
+    # other AI errors -> 502
+    if not result.ok:
+        return JSONResponse(status_code=502, content={"ok": False, "error": result.error or "unknown"})
+
+    # success: return reason, model, mode (may be None)
+    data = result.data or {}
+    return {
+        "ok": True,
+        "reason": data.get("reason"),
+        "model": data.get("model"),
+        "mode": data.get("mode"),
+    }
 
 
 @app.get("/recommendations")

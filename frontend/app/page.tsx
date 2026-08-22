@@ -13,6 +13,16 @@ type Program = {
   thumbnail_url?: string;
 };
 
+type Recommendation = Program & {
+  reason?: string;
+};
+
+type RecommendationAiState = {
+  status: "idle" | "loading" | "success" | "error";
+  reason?: string;
+  errorMessage?: string;
+};
+
 type Episode = {
   filename: string;
   title: string;
@@ -412,6 +422,10 @@ function HomeContent() {
   const [continueItem, setContinueItem] = useState<ContinueItem | null>(null);
   const [continueLoading, setContinueLoading] = useState(false);
   const [unreadEpisodes, setUnreadEpisodes] = useState<UnreadEpisode[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [recommendationAiStates, setRecommendationAiStates] = useState<
+    Record<string, RecommendationAiState>
+  >({});
 
   const [loading, setLoading] = useState(true);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -488,6 +502,98 @@ function HomeContent() {
 
     loadPrograms();
   }, [apiBaseUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRecommendations() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/recommendations`);
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (!cancelled) {
+          setRecommendations(Array.isArray(data) ? (data as Recommendation[]) : []);
+        }
+      } catch {
+        // Recommendations are optional and should not affect the main page.
+      }
+    }
+
+    loadRecommendations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl]);
+
+  async function generateRecommendationReason(recommendation: Recommendation) {
+    const currentState = recommendationAiStates[recommendation.id];
+
+    if (currentState?.status === "loading") return;
+
+    setRecommendationAiStates((currentStates) => ({
+      ...currentStates,
+      [recommendation.id]: { status: "loading" },
+    }));
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/ai/recommendation-reason`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: recommendation.title,
+          network: recommendation.network ?? "",
+          existing_reason: recommendation.reason ?? "",
+          favorite_titles: favoriteProgramNames,
+        }),
+      });
+
+      let data: { reason?: string; error?: string } = {};
+
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok || !data.reason) {
+        const unavailable =
+          response.status === 503 ||
+          [
+            "memory_insufficient",
+            "swap_insufficient",
+            "disabled",
+            "unreachable",
+            "timeout",
+          ].includes(data.error ?? "");
+
+        throw new Error(
+          unavailable
+            ? "今はAI理由を生成できません"
+            : "AI理由の生成に失敗しました"
+        );
+      }
+
+      setRecommendationAiStates((currentStates) => ({
+        ...currentStates,
+        [recommendation.id]: { status: "success", reason: data.reason },
+      }));
+    } catch (error) {
+      setRecommendationAiStates((currentStates) => ({
+        ...currentStates,
+        [recommendation.id]: {
+          status: "error",
+          errorMessage:
+            error instanceof Error
+              ? error.message
+              : "AI理由の生成に失敗しました",
+        },
+      }));
+    }
+  }
 
   useEffect(() => {
     if (!audioRef.current || !selectedEpisode) return;
@@ -1444,6 +1550,92 @@ function HomeContent() {
                   ))}
                 </div>
               </section>
+
+              {recommendations.length > 0 && (
+                <section className="mb-8">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold">おすすめ番組</h2>
+                    <span className="text-xs text-zinc-500">
+                      {recommendations.length}件
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {recommendations.map((recommendation) => {
+                      const aiState =
+                        recommendationAiStates[recommendation.id] ?? {
+                          status: "idle" as const,
+                        };
+
+                      return (
+                        <article
+                          key={recommendation.id}
+                          className="rounded-3xl bg-zinc-900 p-4"
+                        >
+                          <div className="flex items-start gap-3">
+                            <ProgramImage
+                              apiBaseUrl={apiBaseUrl}
+                              program={recommendation}
+                              size="small"
+                            />
+
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs text-zinc-500">
+                                {recommendation.network ?? "放送局不明"}
+                              </p>
+                              <h3 className="mt-1 font-bold">
+                                {recommendation.title}
+                              </h3>
+                            </div>
+                          </div>
+
+                          {recommendation.reason && (
+                            <p className="mt-3 text-sm text-zinc-300">
+                              {recommendation.reason}
+                            </p>
+                          )}
+
+                          {aiState.status === "loading" && (
+                            <p className="mt-3 text-sm text-amber-200">
+                              AIが考えています…
+                            </p>
+                          )}
+
+                          {aiState.status === "success" && aiState.reason && (
+                            <div className="mt-3 rounded-2xl bg-zinc-800 p-3">
+                              <p className="text-xs font-bold text-amber-200">
+                                ✨ AIおすすめ理由
+                              </p>
+                              <p className="mt-1 text-sm text-zinc-200">
+                                {aiState.reason}
+                              </p>
+                            </div>
+                          )}
+
+                          {aiState.status === "error" && (
+                            <p className="mt-3 text-sm text-red-200">
+                              {aiState.errorMessage}
+                            </p>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              generateRecommendationReason(recommendation)
+                            }
+                            disabled={aiState.status === "loading"}
+                            className="mt-4 w-full rounded-2xl bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-950 transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-50"
+                          >
+                            {aiState.status === "loading"
+                              ? "AIが考えています…"
+                              : "✨ AIに理由を聞く"}
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
             </>
           )}
         </div>
