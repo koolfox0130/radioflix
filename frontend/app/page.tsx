@@ -1428,10 +1428,9 @@ function HomeContent() {
               {unreadEpisodes.length > 0 && (
                 <section className="mb-8">
                   <div className="mb-3 flex items-center justify-between">
-                    <h2 className="text-lg font-bold">未聴エピソード</h2>
-                    <span className="text-xs text-zinc-500">
-                      {unreadEpisodes.length}件
-                    </span>
+                    <h2 className="text-lg font-bold">
+                      未聴エピソード {unreadEpisodes.length}件
+                    </h2>
                   </div>
 
                   <div className="space-y-3">
