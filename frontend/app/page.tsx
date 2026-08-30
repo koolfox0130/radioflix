@@ -1429,7 +1429,7 @@ function HomeContent() {
                 <section className="mb-8">
                   <div className="mb-3 flex items-center justify-between">
                     <h2 className="text-lg font-bold">
-                      未聴エピソード {unreadEpisodes.length}件
+                      未聴エピソード（{unreadEpisodes.length}件）
                     </h2>
                   </div>
 
