@@ -1342,7 +1342,7 @@ function HomeContent() {
         <div className="mx-auto max-w-md px-4 pb-24 pt-6">
           <header className="mb-6">
             {/* Project kool-AI pipeline test */}
-            <p className="text-sm text-zinc-400">NAS録音ラジオアーカイブ</p>
+            <p className="text-sm text-zinc-400">NAS録音ラジオ</p>
             <h1 className="text-3xl font-bold tracking-tight">
               <Link href="/">RadioFlix</Link>
             </h1>
