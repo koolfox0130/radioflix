@@ -11,6 +11,11 @@ type Program = {
   category?: string;
   raw_name?: string;
   thumbnail_url?: string;
+  weekday?: string | null;
+  weekday_index?: number | null;
+  start_time?: string | null;
+  display_start_time?: string | null;
+  schedule_sort_minutes?: number | null;
 };
 
 type Recommendation = Program & {
@@ -60,6 +65,18 @@ const favoriteProgramNames = [
   "GURU-GURU!",
   "ヤーレンズANN0",
 ];
+
+const weekdayNames = ["月", "火", "水", "木", "金", "土", "日"];
+
+function getCurrentRadioWeekdayIndex() {
+  const now = new Date();
+
+  if (now.getHours() < 5) {
+    now.setDate(now.getDate() - 1);
+  }
+
+  return (now.getDay() + 6) % 7;
+}
 
 function getDisplayTitle(program: Program) {
   return program.title
@@ -145,26 +162,55 @@ function getEpisodeDateParts(episode: Episode) {
   return null;
 }
 
-function getEpisodeDate(episode: Episode) {
-  const parts = getEpisodeDateParts(episode);
+function getEpisodeStartHour(episode: Episode) {
+  const text = `${episode.filename} ${episode.title}`;
+  const match = text.match(/20\d{6}[_-](\d{2})(\d{2})/);
 
-  if (!parts) {
-    return formatUpdatedAt(episode.updated_at);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+
+  return hour >= 0 && hour <= 23 ? hour : null;
+}
+
+function getEpisodeBroadcastDate(episode: Episode) {
+  const parts = getEpisodeDateParts(episode);
+  const date = parts
+    ? new Date(parts.year, parts.month - 1, parts.day)
+    : new Date(episode.updated_at * 1000);
+
+  if (Number.isNaN(date.getTime())) return null;
+
+  const recordingStartedAt = new Date(episode.updated_at * 1000);
+  const startHour =
+    getEpisodeStartHour(episode) ??
+    (!Number.isNaN(recordingStartedAt.getTime())
+      ? recordingStartedAt.getHours()
+      : null);
+
+  if (startHour !== null && startHour < 5) {
+    date.setDate(date.getDate() - 1);
   }
 
-  return `${parts.year}/${String(parts.month).padStart(2, "0")}/${String(
-    parts.day
-  ).padStart(2, "0")}`;
+  return date;
+}
+
+function getEpisodeDate(episode: Episode) {
+  const date = getEpisodeBroadcastDate(episode);
+
+  if (!date) return formatUpdatedAt(episode.updated_at);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}/${month}/${day}`;
 }
 
 function getEpisodeWeekday(episode: Episode) {
-  const parts = getEpisodeDateParts(episode);
+  const date = getEpisodeBroadcastDate(episode);
 
-  if (!parts) return "";
-
-  const date = new Date(parts.year, parts.month - 1, parts.day);
-
-  if (Number.isNaN(date.getTime())) return "";
+  if (!date) return "";
 
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -426,6 +472,10 @@ function HomeContent() {
   const [recommendationAiStates, setRecommendationAiStates] = useState<
     Record<string, RecommendationAiState>
   >({});
+  const [homeView, setHomeView] = useState<"latest" | "weekday">("latest");
+  const [selectedWeekday, setSelectedWeekday] = useState(
+    getCurrentRadioWeekdayIndex
+  );
 
   const [loading, setLoading] = useState(true);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -708,6 +758,16 @@ function HomeContent() {
         !favoritePrograms.some((favorite) => favorite.id === program.id)
     );
   }, [programs, favoritePrograms]);
+
+  const weekdayPrograms = useMemo(() => {
+    return programs
+      .filter((program) => program.weekday_index === selectedWeekday)
+      .sort(
+        (a, b) =>
+          (a.schedule_sort_minutes ?? Number.MAX_SAFE_INTEGER) -
+          (b.schedule_sort_minutes ?? Number.MAX_SAFE_INTEGER)
+      );
+  }, [programs, selectedWeekday]);
 
   function getPlaybackKey(episode: Episode) {
     if (!selectedProgram) return "";
@@ -1351,6 +1411,33 @@ function HomeContent() {
             </p>
           </header>
 
+          <div className="mb-6 grid grid-cols-2 rounded-2xl bg-zinc-900 p-1">
+            <button
+              type="button"
+              onClick={() => setHomeView("latest")}
+              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-bold transition ${
+                homeView === "latest"
+                  ? "bg-zinc-100 text-zinc-950"
+                  : "text-zinc-400"
+              }`}
+              aria-pressed={homeView === "latest"}
+            >
+              最新
+            </button>
+            <button
+              type="button"
+              onClick={() => setHomeView("weekday")}
+              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-bold transition ${
+                homeView === "weekday"
+                  ? "bg-zinc-100 text-zinc-950"
+                  : "text-zinc-400"
+              }`}
+              aria-pressed={homeView === "weekday"}
+            >
+              曜日別
+            </button>
+          </div>
+
           {loading && (
             <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
               録音一覧を読み込み中...
@@ -1365,6 +1452,7 @@ function HomeContent() {
 
           {!loading && !error && (
             <>
+              <div className={homeView === "latest" ? "" : "hidden"}>
               {continueItem && (
                 <section className="mb-8">
                   <div className="mb-3 flex items-center justify-between">
@@ -1634,6 +1722,79 @@ function HomeContent() {
                       );
                     })}
                   </div>
+                </section>
+              )}
+              </div>
+
+              {homeView === "weekday" && (
+                <section className="mb-8">
+                  <div
+                    className="grid grid-cols-7 gap-1"
+                    aria-label="曜日を選択"
+                  >
+                    {weekdayNames.map((weekday, index) => (
+                      <button
+                        key={weekday}
+                        type="button"
+                        onClick={() => setSelectedWeekday(index)}
+                        className={`min-h-11 rounded-xl text-sm font-bold transition active:scale-95 ${
+                          selectedWeekday === index
+                            ? "bg-zinc-100 text-zinc-950"
+                            : "bg-zinc-900 text-zinc-400"
+                        }`}
+                        aria-pressed={selectedWeekday === index}
+                        aria-label={`${weekday}曜日`}
+                      >
+                        {weekday}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mb-3 mt-6 flex items-center justify-between">
+                    <h2 className="text-xl font-bold">
+                      {weekdayNames[selectedWeekday]}曜日
+                    </h2>
+                    <span className="text-xs text-zinc-500">
+                      {weekdayPrograms.length}件
+                    </span>
+                  </div>
+
+                  {weekdayPrograms.length === 0 ? (
+                    <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
+                      この曜日の番組はまだありません。
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {weekdayPrograms.map((program) => (
+                        <button
+                          key={program.id}
+                          type="button"
+                          onClick={() => openProgram(program)}
+                          className="w-full rounded-3xl bg-zinc-900 p-3 text-left transition active:scale-[0.99]"
+                        >
+                          <div className="flex items-center gap-3">
+                            <p className="w-12 shrink-0 text-center text-lg font-bold tabular-nums text-zinc-100">
+                              {program.display_start_time}
+                            </p>
+                            <ProgramImage
+                              apiBaseUrl={apiBaseUrl}
+                              program={program}
+                              size="small"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <h3 className="line-clamp-2 font-bold">
+                                {getDisplayTitle(program)}
+                              </h3>
+                              <p className="mt-1 text-sm text-zinc-400">
+                                {program.network || program.category || "録音番組"}
+                              </p>
+                            </div>
+                            <span className="shrink-0 text-zinc-500">›</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </section>
               )}
             </>

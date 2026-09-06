@@ -1,5 +1,7 @@
 import mimetypes
 import os
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -66,6 +68,61 @@ THUMBNAIL_FILENAMES = {
 program_service = ProgramService(RADIKO_DIR)
 recommendation_service = RecommendationService(program_service)
 ai_service = AIService()
+
+RECORDING_DATETIME_PATTERN = re.compile(
+    r"_(?P<date>\d{8})_(?P<start>\d{4})_(?P<end>\d{4})(?:_|\.|$)"
+)
+WEEKDAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
+
+
+def get_program_schedule(program: dict):
+    program_folder = RADIKO_DIR / program["raw_name"]
+    latest_recording = None
+
+    if program_folder.exists() and program_folder.is_dir():
+        for file in program_folder.iterdir():
+            if not file.is_file() or file.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+
+            match = RECORDING_DATETIME_PATTERN.search(file.name)
+
+            if not match:
+                continue
+
+            try:
+                recording_datetime = datetime.strptime(
+                    f"{match.group('date')}{match.group('start')}",
+                    "%Y%m%d%H%M",
+                )
+            except ValueError:
+                continue
+
+            if latest_recording is None or recording_datetime > latest_recording:
+                latest_recording = recording_datetime
+
+    if latest_recording is None:
+        return {
+            "weekday": None,
+            "weekday_index": None,
+            "start_time": None,
+            "display_start_time": None,
+            "schedule_sort_minutes": None,
+        }
+
+    schedule_date = latest_recording
+    display_hour = latest_recording.hour
+
+    if latest_recording.hour < 5:
+        schedule_date -= timedelta(days=1)
+        display_hour += 24
+
+    return {
+        "weekday": WEEKDAY_NAMES[schedule_date.weekday()],
+        "weekday_index": schedule_date.weekday(),
+        "start_time": latest_recording.strftime("%H:%M"),
+        "display_start_time": f"{display_hour:02d}:{latest_recording.minute:02d}",
+        "schedule_sort_minutes": display_hour * 60 + latest_recording.minute,
+    }
 
 
 def get_safe_file_path(folder: Path, filename: str):
@@ -213,7 +270,15 @@ def root():
 @app.get("/programs")
 @app.get("/api/programs")
 def programs():
-    return program_service.get_recorded_programs()
+    recorded_programs = program_service.get_recorded_programs()
+
+    return [
+        {
+            **program,
+            **get_program_schedule(program),
+        }
+        for program in recorded_programs
+    ]
 
 
 class RecommendationReasonRequest(BaseModel):
