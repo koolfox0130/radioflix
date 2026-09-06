@@ -454,12 +454,47 @@ function GlobalStyles() {
         animation-iteration-count: infinite;
         animation-delay: 2s;
       }
+
+      @keyframes weekday-slide-out-next {
+        to { transform: translateX(-100%); }
+      }
+
+      @keyframes weekday-slide-in-next {
+        from { transform: translateX(100%); }
+        to { transform: translateX(0); }
+      }
+
+      @keyframes weekday-slide-out-previous {
+        to { transform: translateX(100%); }
+      }
+
+      @keyframes weekday-slide-in-previous {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(0); }
+      }
+
+      .weekday-slide-out-next,
+      .weekday-slide-in-next,
+      .weekday-slide-out-previous,
+      .weekday-slide-in-previous {
+        animation-duration: 220ms;
+        animation-fill-mode: forwards;
+        animation-timing-function: ease-out;
+      }
+
+      .weekday-slide-out-next { animation-name: weekday-slide-out-next; }
+      .weekday-slide-in-next { animation-name: weekday-slide-in-next; }
+      .weekday-slide-out-previous { animation-name: weekday-slide-out-previous; }
+      .weekday-slide-in-previous { animation-name: weekday-slide-in-previous; }
     `}</style>
   );
 }
 
 function HomeContent() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const weekdayTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressWeekdayClickRef = useRef(false);
+  const isWeekdaySlidingRef = useRef(false);
 
   const [programs, setPrograms] = useState<Program[]>([]);
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
@@ -476,6 +511,10 @@ function HomeContent() {
   const [selectedWeekday, setSelectedWeekday] = useState(
     getCurrentRadioWeekdayIndex
   );
+  const [weekdaySlide, setWeekdaySlide] = useState<{
+    targetWeekday: number;
+    direction: "next" | "previous";
+  } | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -492,6 +531,108 @@ function HomeContent() {
 
   const apiBaseUrl = "";
   const searchParams = useSearchParams();
+
+  function handleWeekdayTouchStart(event: React.TouchEvent<HTMLElement>) {
+    if (isWeekdaySlidingRef.current) return;
+
+    const touch = event.touches[0];
+
+    weekdayTouchStartRef.current = touch
+      ? { x: touch.clientX, y: touch.clientY }
+      : null;
+  }
+
+  function handleWeekdayTouchEnd(event: React.TouchEvent<HTMLElement>) {
+    const touchStart = weekdayTouchStartRef.current;
+    const touch = event.changedTouches[0];
+
+    weekdayTouchStartRef.current = null;
+
+    if (!touchStart || !touch || isWeekdaySlidingRef.current) return;
+
+    const deltaX = touch.clientX - touchStart.x;
+    const deltaY = touch.clientY - touchStart.y;
+
+    if (Math.abs(deltaX) < 50 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+
+    suppressWeekdayClickRef.current = true;
+    isWeekdaySlidingRef.current = true;
+    setWeekdaySlide({
+      targetWeekday:
+        (selectedWeekday + (deltaX < 0 ? 1 : -1) + weekdayNames.length) %
+        weekdayNames.length,
+      direction: deltaX < 0 ? "next" : "previous",
+    });
+
+    window.setTimeout(() => {
+      suppressWeekdayClickRef.current = false;
+    }, 400);
+  }
+
+  function handleWeekdayClickCapture(event: React.MouseEvent<HTMLElement>) {
+    if (!suppressWeekdayClickRef.current) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    suppressWeekdayClickRef.current = false;
+  }
+
+  function handleWeekdaySlideEnd(event: React.AnimationEvent<HTMLElement>) {
+    if (event.target !== event.currentTarget || !weekdaySlide) return;
+
+    setSelectedWeekday(weekdaySlide.targetWeekday);
+    setWeekdaySlide(null);
+    isWeekdaySlidingRef.current = false;
+  }
+
+  function handleWeekdaySelect(weekday: number) {
+    if (isWeekdaySlidingRef.current) return;
+
+    setSelectedWeekday(weekday);
+  }
+
+  function renderWeekdayProgramList(programList: Program[]) {
+    if (programList.length === 0) {
+      return (
+        <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
+          この曜日の番組はまだありません。
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {programList.map((program) => (
+          <button
+            key={program.id}
+            type="button"
+            onClick={() => openProgram(program)}
+            className="w-full rounded-3xl bg-zinc-900 p-3 text-left transition active:scale-[0.99]"
+          >
+            <div className="flex items-center gap-3">
+              <p className="w-12 shrink-0 text-center text-lg font-bold tabular-nums text-zinc-100">
+                {program.display_start_time}
+              </p>
+              <ProgramImage
+                apiBaseUrl={apiBaseUrl}
+                program={program}
+                size="small"
+              />
+              <div className="min-w-0 flex-1">
+                <h3 className="line-clamp-2 font-bold">
+                  {getDisplayTitle(program)}
+                </h3>
+                <p className="mt-1 text-sm text-zinc-400">
+                  {program.network || program.category || "録音番組"}
+                </p>
+              </div>
+              <span className="shrink-0 text-zinc-500">›</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   useEffect(() => {
     if (autoOpenQueryHandled || programs.length === 0) return;
@@ -768,6 +909,20 @@ function HomeContent() {
           (b.schedule_sort_minutes ?? Number.MAX_SAFE_INTEGER)
       );
   }, [programs, selectedWeekday]);
+
+  const slidingWeekdayPrograms = useMemo(() => {
+    if (!weekdaySlide) return [];
+
+    return programs
+      .filter(
+        (program) => program.weekday_index === weekdaySlide.targetWeekday
+      )
+      .sort(
+        (a, b) =>
+          (a.schedule_sort_minutes ?? Number.MAX_SAFE_INTEGER) -
+          (b.schedule_sort_minutes ?? Number.MAX_SAFE_INTEGER)
+      );
+  }, [programs, weekdaySlide]);
 
   function getPlaybackKey(episode: Episode) {
     if (!selectedProgram) return "";
@@ -1736,7 +1891,7 @@ function HomeContent() {
                       <button
                         key={weekday}
                         type="button"
-                        onClick={() => setSelectedWeekday(index)}
+                        onClick={() => handleWeekdaySelect(index)}
                         className={`min-h-11 rounded-xl text-sm font-bold transition active:scale-95 ${
                           selectedWeekday === index
                             ? "bg-zinc-100 text-zinc-950"
@@ -1750,51 +1905,53 @@ function HomeContent() {
                     ))}
                   </div>
 
-                  <div className="mb-3 mt-6 flex items-center justify-between">
-                    <h2 className="text-xl font-bold">
-                      {weekdayNames[selectedWeekday]}曜日
-                    </h2>
-                    <span className="text-xs text-zinc-500">
-                      {weekdayPrograms.length}件
-                    </span>
-                  </div>
+                  <div
+                    onTouchStart={handleWeekdayTouchStart}
+                    onTouchEnd={handleWeekdayTouchEnd}
+                    onTouchCancel={() => {
+                      weekdayTouchStartRef.current = null;
+                    }}
+                    onClickCapture={handleWeekdayClickCapture}
+                  >
+                    <div className="grid overflow-hidden">
+                      <div
+                        className={`[grid-area:1/1] ${
+                          weekdaySlide
+                            ? `weekday-slide-out-${weekdaySlide.direction}`
+                            : ""
+                        }`}
+                        onAnimationEnd={handleWeekdaySlideEnd}
+                      >
+                        <div className="mb-3 mt-6 flex items-center justify-between">
+                          <h2 className="text-xl font-bold">
+                            {weekdayNames[selectedWeekday]}曜日
+                          </h2>
+                          <span className="text-xs text-zinc-500">
+                            {weekdayPrograms.length}件
+                          </span>
+                        </div>
 
-                  {weekdayPrograms.length === 0 ? (
-                    <div className="rounded-3xl bg-zinc-900 p-5 text-sm text-zinc-400">
-                      この曜日の番組はまだありません。
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {weekdayPrograms.map((program) => (
-                        <button
-                          key={program.id}
-                          type="button"
-                          onClick={() => openProgram(program)}
-                          className="w-full rounded-3xl bg-zinc-900 p-3 text-left transition active:scale-[0.99]"
+                        {renderWeekdayProgramList(weekdayPrograms)}
+                      </div>
+
+                      {weekdaySlide && (
+                        <div
+                          className={`weekday-slide-in-${weekdaySlide.direction} [grid-area:1/1]`}
                         >
-                          <div className="flex items-center gap-3">
-                            <p className="w-12 shrink-0 text-center text-lg font-bold tabular-nums text-zinc-100">
-                              {program.display_start_time}
-                            </p>
-                            <ProgramImage
-                              apiBaseUrl={apiBaseUrl}
-                              program={program}
-                              size="small"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <h3 className="line-clamp-2 font-bold">
-                                {getDisplayTitle(program)}
-                              </h3>
-                              <p className="mt-1 text-sm text-zinc-400">
-                                {program.network || program.category || "録音番組"}
-                              </p>
-                            </div>
-                            <span className="shrink-0 text-zinc-500">›</span>
+                          <div className="mb-3 mt-6 flex items-center justify-between">
+                            <h2 className="text-xl font-bold">
+                              {weekdayNames[weekdaySlide.targetWeekday]}曜日
+                            </h2>
+                            <span className="text-xs text-zinc-500">
+                              {slidingWeekdayPrograms.length}件
+                            </span>
                           </div>
-                        </button>
-                      ))}
+
+                          {renderWeekdayProgramList(slidingWeekdayPrograms)}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </section>
               )}
             </>
