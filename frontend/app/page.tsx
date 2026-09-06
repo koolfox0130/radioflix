@@ -1514,6 +1514,42 @@ function HomeContent() {
                 </section>
               )}
 
+              {favoritePrograms.length > 0 && (
+                <section className="mb-8">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold">お気に入り番組</h2>
+                    <span className="text-xs text-zinc-500">
+                      {favoritePrograms.length}件
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {favoritePrograms.map((program) => (
+                      <button
+                        key={program.id}
+                        onClick={() => openProgram(program)}
+                        className="overflow-hidden rounded-3xl bg-zinc-900 text-left transition active:scale-[0.99]"
+                      >
+                        <ProgramImage
+                          apiBaseUrl={apiBaseUrl}
+                          program={program}
+                          size="large"
+                        />
+
+                        <div className="p-3">
+                          <p className="text-xs text-zinc-500">
+                            {program.category ?? program.network ?? "録音"}
+                          </p>
+                          <h3 className="mt-1 line-clamp-2 font-bold">
+                            {getDisplayTitle(program)}
+                          </h3>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               {unreadEpisodes.length > 0 && (
                 <section className="mb-8">
                   <div className="mb-3 flex items-center justify-between">
@@ -1555,42 +1591,6 @@ function HomeContent() {
                           </div>
 
                           <span className="shrink-0 text-zinc-500">›</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {favoritePrograms.length > 0 && (
-                <section className="mb-8">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h2 className="text-lg font-bold">お気に入り番組</h2>
-                    <span className="text-xs text-zinc-500">
-                      {favoritePrograms.length}件
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    {favoritePrograms.map((program) => (
-                      <button
-                        key={program.id}
-                        onClick={() => openProgram(program)}
-                        className="overflow-hidden rounded-3xl bg-zinc-900 text-left transition active:scale-[0.99]"
-                      >
-                        <ProgramImage
-                          apiBaseUrl={apiBaseUrl}
-                          program={program}
-                          size="large"
-                        />
-
-                        <div className="p-3">
-                          <p className="text-xs text-zinc-500">
-                            {program.category ?? program.network ?? "録音"}
-                          </p>
-                          <h3 className="mt-1 line-clamp-2 font-bold">
-                            {getDisplayTitle(program)}
-                          </h3>
                         </div>
                       </button>
                     ))}
