@@ -499,6 +499,8 @@ function HomeContent() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
+  const [playingProgram, setPlayingProgram] = useState<Program | null>(null);
+  const [playingEpisodes, setPlayingEpisodes] = useState<Episode[]>([]);
   const [selectedEpisode, setSelectedEpisode] = useState<Episode | null>(null);
   const [continueItem, setContinueItem] = useState<ContinueItem | null>(null);
   const [continueLoading, setContinueLoading] = useState(false);
@@ -925,8 +927,8 @@ function HomeContent() {
   }, [programs, weekdaySlide]);
 
   function getPlaybackKey(episode: Episode) {
-    if (!selectedProgram) return "";
-    return getPlaybackStorageKey(selectedProgram, episode);
+    if (!playingProgram) return "";
+    return getPlaybackStorageKey(playingProgram, episode);
   }
 
   function savePlaybackPosition(
@@ -936,7 +938,7 @@ function HomeContent() {
   ) {
     const playbackKey = getPlaybackKey(episode);
 
-    if (!playbackKey || !selectedProgram) return;
+    if (!playbackKey || !playingProgram) return;
 
     const nextPlaybackInfo = {
       currentTime: nextCurrentTime,
@@ -946,12 +948,12 @@ function HomeContent() {
 
     window.localStorage.setItem(playbackKey, JSON.stringify(nextPlaybackInfo));
 
-    const playbackState = getEpisodePlaybackState(selectedProgram, episode);
+    const playbackState = getEpisodePlaybackState(playingProgram, episode);
 
     setUnreadEpisodes((currentUnreadEpisodes) => {
       const currentIndex = currentUnreadEpisodes.findIndex(
         (item) =>
-          item.program.id === selectedProgram.id &&
+          item.program.id === playingProgram.id &&
           item.episode.filename === episode.filename
       );
 
@@ -960,7 +962,7 @@ function HomeContent() {
 
         return [
           ...currentUnreadEpisodes,
-          { program: selectedProgram, episode },
+          { program: playingProgram, episode },
         ].sort((a, b) => b.episode.updated_at - a.episode.updated_at);
       }
 
@@ -971,7 +973,7 @@ function HomeContent() {
 
     if (playbackState.status === "途中") {
       setContinueItem({
-        program: selectedProgram,
+        program: playingProgram,
         episode,
         playbackInfo: nextPlaybackInfo,
         progress: playbackState.progress,
@@ -988,13 +990,8 @@ function HomeContent() {
   ) {
     setSelectedProgram(program);
     setEpisodes([]);
-    setSelectedEpisode(null);
     setEpisodesError("");
     setEpisodesLoading(true);
-    setIsPlaying(false);
-    setDuration(0);
-    setCurrentTime(0);
-    setPlaybackError("");
 
     try {
       const response = await fetch(
@@ -1016,8 +1013,12 @@ function HomeContent() {
         );
 
         if (targetEpisode) {
-          setSelectedEpisode(targetEpisode);
-          setShouldAutoPlay(options.autoPlay ?? true);
+          selectEpisode(
+            targetEpisode,
+            options.autoPlay ?? true,
+            program,
+            nextEpisodes
+          );
         }
       }
     } catch (err) {
@@ -1038,23 +1039,32 @@ function HomeContent() {
   }
 
   function closeProgram() {
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-
     setSelectedProgram(null);
     setEpisodes([]);
-    setSelectedEpisode(null);
     setEpisodesError("");
-    setIsPlaying(false);
-    setDuration(0);
-    setCurrentTime(0);
-    setPlaybackError("");
   }
 
-  function selectEpisode(episode: Episode, autoPlay = true) {
+  function selectEpisode(
+    episode: Episode,
+    autoPlay = true,
+    program = selectedProgram,
+    programEpisodes = episodes
+  ) {
+    if (!program) return;
+
+    if (
+      playingProgram?.id === program.id &&
+      selectedEpisode?.filename === episode.filename
+    ) {
+      if (autoPlay && audioRef.current?.paused) void togglePlay();
+      return;
+    }
+
+    setPlayingProgram(program);
+    setPlayingEpisodes(programEpisodes);
     setSelectedEpisode(episode);
     setShouldAutoPlay(autoPlay);
+    setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
     setPlaybackError("");
@@ -1148,7 +1158,7 @@ function HomeContent() {
   function selectAdjacentEpisode(direction: "older" | "newer") {
     if (!selectedEpisode) return;
 
-    const currentIndex = episodes.findIndex(
+    const currentIndex = playingEpisodes.findIndex(
       (episode) => episode.filename === selectedEpisode.filename
     );
 
@@ -1157,9 +1167,9 @@ function HomeContent() {
     const nextIndex =
       direction === "older" ? currentIndex + 1 : currentIndex - 1;
 
-    if (nextIndex < 0 || nextIndex >= episodes.length) return;
+    if (nextIndex < 0 || nextIndex >= playingEpisodes.length) return;
 
-    selectEpisode(episodes[nextIndex], true);
+    selectEpisode(playingEpisodes[nextIndex], true, playingProgram, playingEpisodes);
   }
 
   function handleLoadedMetadata() {
@@ -1254,18 +1264,17 @@ function HomeContent() {
     : "";
 
   const selectedEpisodeIndex = selectedEpisode
-    ? episodes.findIndex(
+    ? playingEpisodes.findIndex(
         (episode) => episode.filename === selectedEpisode.filename
       )
     : -1;
 
   const hasOlderEpisode =
-    selectedEpisodeIndex >= 0 && selectedEpisodeIndex < episodes.length - 1;
+    selectedEpisodeIndex >= 0 && selectedEpisodeIndex < playingEpisodes.length - 1;
 
   const hasNewerEpisode = selectedEpisodeIndex > 0;
 
-  if (selectedProgram) {
-    return (
+  const screen = selectedProgram ? (
       <>
         <GlobalStyles />
 
@@ -1330,6 +1339,7 @@ function HomeContent() {
                     <div className="mt-4 space-y-3">
                       {episodes.map((episode) => {
                         const isSelected =
+                          playingProgram?.id === selectedProgram.id &&
                           selectedEpisode?.filename === episode.filename;
 
                         const playbackState = getEpisodePlaybackState(
@@ -1411,124 +1421,6 @@ function HomeContent() {
             </div>
           </div>
 
-          <audio
-            ref={audioRef}
-            src={selectedEpisodeAudioUrl || undefined}
-            preload="metadata"
-            onLoadedMetadata={handleLoadedMetadata}
-            onTimeUpdate={handleTimeUpdate}
-            onPlay={() => {
-              setIsPlaying(true);
-              setPlaybackError("");
-            }}
-            onPause={() => setIsPlaying(false)}
-            onEnded={handleEnded}
-            onError={handleAudioError}
-          />
-
-          {selectedEpisode && (
-            <div className="fixed bottom-14 left-0 right-0 z-40 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
-              <div className="mx-auto max-w-md px-4 py-3">
-                <div className="mb-3 flex items-start gap-3">
-                  <EpisodeImage
-                    apiBaseUrl={apiBaseUrl}
-                    episode={selectedEpisode}
-                  />
-
-                  <div className="min-w-0 flex-1">
-                    <p className="mb-1 text-xs text-zinc-500">
-                      {getEpisodeDate(selectedEpisode)}{" "}
-                      {getEpisodeWeekday(selectedEpisode)}
-                    </p>
-
-                    <ScrollingTitle
-                      text={getEpisodeDisplayTitle(selectedEpisode)}
-                    />
-
-                    <div className="mt-2 flex items-center justify-between gap-3">
-                      <p className="text-xs text-zinc-500">
-                        {formatTime(currentTime)} / {formatTime(duration)}
-                      </p>
-
-                      <button
-                        onClick={togglePlaybackRate}
-                        className="shrink-0 rounded-2xl bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-100 active:scale-95"
-                        title="再生速度を切り替え"
-                      >
-                        {playbackRate.toFixed(1)}x
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {playbackError && (
-                  <p
-                    role="alert"
-                    className="mb-3 rounded-xl border border-red-500/40 bg-red-950/50 px-3 py-2 text-xs text-red-200"
-                  >
-                    {playbackError}
-                  </p>
-                )}
-
-                <input
-                  type="range"
-                  min={0}
-                  max={duration || 0}
-                  value={Math.min(currentTime, duration || currentTime)}
-                  onChange={(event) => seek(Number(event.target.value))}
-                  className="mb-3 w-full"
-                />
-
-                <div className="grid grid-cols-5 items-center gap-2 text-sm">
-                  <button
-                    onClick={() => selectAdjacentEpisode("older")}
-                    disabled={!hasOlderEpisode}
-                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
-                  >
-                    ⏮
-                  </button>
-
-                  <button
-                    onClick={() => skip(-15)}
-                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
-                  >
-                    ↩15
-                  </button>
-
-                  <button
-                    onClick={togglePlay}
-                    className="rounded-2xl bg-zinc-100 px-2 py-3 text-lg font-bold text-zinc-950"
-                  >
-                    {isPlaying ? "⏸" : "▶"}
-                  </button>
-
-                  <button
-                    onClick={() => skip(30)}
-                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
-                  >
-                    30↪
-                  </button>
-
-                  <button
-                    onClick={() => selectAdjacentEpisode("newer")}
-                    disabled={!hasNewerEpisode}
-                    className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
-                  >
-                    ⏭
-                  </button>
-                </div>
-
-                <div className="mt-2 grid grid-cols-5 text-center text-[10px] text-zinc-500">
-                  <span>前の録音</span>
-                  <span>15秒戻る</span>
-                  <span>再生</span>
-                  <span>30秒送る</span>
-                  <span>次の録音</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
             <div className="mx-auto grid max-w-md grid-cols-4 px-2 py-2 text-center text-xs text-zinc-400">
               <button
@@ -1546,15 +1438,12 @@ function HomeContent() {
           </nav>
         </main>
       </>
-    );
-  }
-
-  return (
+    ) : (
     <>
       <GlobalStyles />
 
       <main className="min-h-screen bg-zinc-950 text-zinc-100">
-        <div className="mx-auto max-w-md px-4 pb-24 pt-6">
+        <div className={`mx-auto max-w-md px-4 pt-6 ${selectedEpisode ? "pb-72" : "pb-24"}`}>
           <header className="mb-6">
             {/* Project kool-AI pipeline test */}
             <p className="text-sm text-zinc-400">NAS録音ラジオ</p>
@@ -1971,6 +1860,129 @@ function HomeContent() {
           </div>
         </nav>
       </main>
+    </>
+  );
+
+  return (
+    <>
+      {screen}
+      <audio
+        ref={audioRef}
+        src={selectedEpisodeAudioUrl || undefined}
+        preload="metadata"
+        onLoadedMetadata={handleLoadedMetadata}
+        onTimeUpdate={handleTimeUpdate}
+        onPlay={() => {
+          setIsPlaying(true);
+          setPlaybackError("");
+        }}
+        onPause={() => setIsPlaying(false)}
+        onEnded={handleEnded}
+        onError={handleAudioError}
+      />
+
+      {selectedEpisode && (
+        <div className="fixed bottom-14 left-0 right-0 z-40 border-t border-zinc-800 bg-zinc-950/95 text-zinc-100 backdrop-blur">
+          <div className="mx-auto max-w-md px-4 py-3">
+            <div className="mb-3 flex items-start gap-3">
+              <EpisodeImage
+                apiBaseUrl={apiBaseUrl}
+                episode={selectedEpisode}
+              />
+
+              <div className="min-w-0 flex-1">
+                <p className="mb-1 text-xs text-zinc-500">
+                  {getEpisodeDate(selectedEpisode)}{" "}
+                  {getEpisodeWeekday(selectedEpisode)}
+                </p>
+
+                <ScrollingTitle
+                  text={getEpisodeDisplayTitle(selectedEpisode)}
+                />
+
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <p className="text-xs text-zinc-500">
+                    {formatTime(currentTime)} / {formatTime(duration)}
+                  </p>
+
+                  <button
+                    onClick={togglePlaybackRate}
+                    className="shrink-0 rounded-2xl bg-zinc-800 px-4 py-2 text-sm font-bold text-zinc-100 active:scale-95"
+                    title="再生速度を切り替え"
+                  >
+                    {playbackRate.toFixed(1)}x
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {playbackError && (
+              <p
+                role="alert"
+                className="mb-3 rounded-xl border border-red-500/40 bg-red-950/50 px-3 py-2 text-xs text-red-200"
+              >
+                {playbackError}
+              </p>
+            )}
+
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              value={Math.min(currentTime, duration || currentTime)}
+              onChange={(event) => seek(Number(event.target.value))}
+              className="mb-3 w-full"
+            />
+
+            <div className="grid grid-cols-5 items-center gap-2 text-sm">
+              <button
+                onClick={() => selectAdjacentEpisode("older")}
+                disabled={!hasOlderEpisode}
+                className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
+              >
+                ⏮
+              </button>
+
+              <button
+                onClick={() => skip(-15)}
+                className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
+              >
+                ↩15
+              </button>
+
+              <button
+                onClick={togglePlay}
+                className="rounded-2xl bg-zinc-100 px-2 py-3 text-lg font-bold text-zinc-950"
+              >
+                {isPlaying ? "⏸" : "▶"}
+              </button>
+
+              <button
+                onClick={() => skip(30)}
+                className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold"
+              >
+                30↪
+              </button>
+
+              <button
+                onClick={() => selectAdjacentEpisode("newer")}
+                disabled={!hasNewerEpisode}
+                className="rounded-2xl bg-zinc-800 px-2 py-3 font-bold disabled:opacity-30"
+              >
+                ⏭
+              </button>
+            </div>
+
+            <div className="mt-2 grid grid-cols-5 text-center text-[10px] text-zinc-500">
+              <span>前の録音</span>
+              <span>15秒戻る</span>
+              <span>再生</span>
+              <span>30秒送る</span>
+              <span>次の録音</span>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
