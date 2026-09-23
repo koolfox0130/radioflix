@@ -1,6 +1,9 @@
 import mimetypes
+import asyncio
+import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -8,6 +11,10 @@ from urllib.parse import quote, unquote
 from radioflix.services.program_service import ProgramService
 from radioflix.services.recommendation_service import RecommendationService
 from radioflix.services.ai_service import AIService
+from radioflix.adapters.rfriends import RfriendsAdapter
+from radioflix.api.reservations import reservation_router
+from radioflix.database.reservations import ReservationStore
+from radioflix.services.reservation_service import ReservationService
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException
@@ -21,7 +28,43 @@ except ImportError:
     MP4Cover = None
 
 
-app = FastAPI()
+reservation_service = ReservationService(
+    ReservationStore(os.getenv("RADIOFLIX_DB_PATH", str(Path(__file__).parent / "data/radioflix.sqlite3"))),
+    RfriendsAdapter(),
+)
+
+
+@asynccontextmanager
+async def lifespan(application):
+    stopped = asyncio.Event()
+
+    async def reconcile_reservations():
+        while not stopped.is_set():
+            try:
+                await asyncio.to_thread(reservation_service.reconcile)
+            except Exception:
+                logging.getLogger(__name__).error("予約状態の定期確認に失敗しました。")
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=60)
+            except TimeoutError:
+                pass
+
+    task = asyncio.create_task(reconcile_reservations()) if os.getenv("RFRIENDS_GATEWAY_URL") else None
+    try:
+        yield
+    finally:
+        stopped.set()
+        if task:
+            # A reconcile may be waiting on a gateway/SQLite operation.  Do
+            # not let TestClient or process shutdown wait indefinitely for it.
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2)
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 # 家庭内LAN開発用：
 # localhost:3000 だけでなく、192.168.x.x:3000 からのアクセスも許可する
@@ -68,6 +111,7 @@ THUMBNAIL_FILENAMES = {
 program_service = ProgramService(RADIKO_DIR)
 recommendation_service = RecommendationService(program_service)
 ai_service = AIService()
+app.include_router(reservation_router(reservation_service, program_service))
 
 RECORDING_DATETIME_PATTERN = re.compile(
     r"_(?P<date>\d{8})_(?P<start>\d{4})_(?P<end>\d{4})(?:_|\.|$)"

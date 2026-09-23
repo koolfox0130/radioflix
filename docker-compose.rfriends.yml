@@ -1,0 +1,48 @@
+# Opt in explicitly: docker compose -f docker-compose.yml -f docker-compose.rfriends.yml ...
+# No rfriends3 container changes or public gateway port.
+services:
+  backend:
+    environment:
+      RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RFRIENDS_GATEWAY_URL: http://rfriends-gateway:8011
+      RFRIENDS_TOKEN_FILE: /run/secrets/rfriends_token
+      RFRIENDS_AREA: ${RFRIENDS_AREA:-JP13}
+    volumes:
+      - radioflix-reservations:/data
+    secrets:
+      - rfriends_token
+    depends_on:
+      - rfriends-gateway
+    networks:
+      - rfriends-adapter
+
+  rfriends-gateway:
+    build: ./backend
+    restart: unless-stopped
+    command: ["uvicorn", "radioflix.adapters.rfriends_gateway:app", "--host", "0.0.0.0", "--port", "8011", "--no-access-log"]
+    environment:
+      RFRIENDS_TOKEN_FILE: /run/secrets/rfriends_token
+      RFRIENDS_CONTAINER: rfriends3
+      RFRIENDS_USER: user
+      RFRIENDS_BASE: /home/user/rfriends3
+      RFRIENDS_TMP: /home/user/tmp
+      RFRIENDS_QUEUE: a
+      RFRIENDS_ENABLE_WRITES: ${RFRIENDS_ENABLE_WRITES:-0}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    secrets:
+      - rfriends_token
+    networks:
+      - rfriends-adapter
+    read_only: true
+
+volumes:
+  radioflix-reservations:
+
+secrets:
+  rfriends_token:
+    file: ./secrets/rfriends_token
+
+networks:
+  rfriends-adapter:
+    internal: true

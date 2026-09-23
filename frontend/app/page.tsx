@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ReservationBadge, ReservationPanel, useReservations } from "./components/Reservations";
 
 type Program = {
   id: string;
@@ -491,6 +492,7 @@ function GlobalStyles() {
 }
 
 function HomeContent() {
+  const reservations = useReservations();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const weekdayTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressWeekdayClickRef = useRef(false);
@@ -627,6 +629,7 @@ function HomeContent() {
                 <p className="mt-1 text-sm text-zinc-400">
                   {program.network || program.category || "録音番組"}
                 </p>
+                <ReservationBadge items={reservations.items} programId={program.id} unavailable={!!reservations.error} />
               </div>
               <span className="shrink-0 text-zinc-500">›</span>
             </div>
@@ -1305,6 +1308,8 @@ function HomeContent() {
                 {getDisplayTitle(selectedProgram)}
               </h1>
 
+              <ReservationPanel key={selectedProgram.id} programId={selectedProgram.id} manager={reservations} />
+
               <div className="mt-5 rounded-3xl bg-zinc-900 p-4">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold">録音一覧</h2>
@@ -1453,6 +1458,8 @@ function HomeContent() {
             <p className="mt-2 text-sm text-zinc-400">
               番組を選んで、録音一覧を開きます。
             </p>
+            <Link href="/reservations" className="mt-2 inline-flex min-h-11 items-center text-sm text-zinc-200 underline">録音予約一覧</Link>
+            {reservations.error && <p role="alert" className="mt-2 text-sm text-amber-300">{reservations.error}</p>}
           </header>
 
           <div className="mb-6 grid grid-cols-2 rounded-2xl bg-zinc-900 p-1">
