@@ -1277,6 +1277,138 @@ function HomeContent() {
 
   const hasNewerEpisode = selectedEpisodeIndex > 0;
 
+  useEffect(() => {
+    if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
+
+    const session = navigator.mediaSession;
+    if (!selectedEpisode || !playingProgram) {
+      session.metadata = null;
+      return;
+    }
+
+    const metadata = new MediaMetadata({
+      title: getEpisodeDisplayTitle(selectedEpisode),
+      artist: getDisplayTitle(playingProgram),
+    });
+    session.metadata = metadata;
+
+    const candidates = [
+      getApiUrl(apiBaseUrl, selectedEpisode.thumbnail_url),
+      getApiUrl(apiBaseUrl, playingProgram.thumbnail_url),
+      "/icons/icon-512.png",
+    ].filter((url, index, urls) => url && urls.indexOf(url) === index);
+    let cancelled = false;
+    let pendingImage: HTMLImageElement | null = null;
+
+    function loadArtwork(index: number) {
+      if (cancelled || index >= candidates.length) return;
+
+      const artworkUrl = new URL(candidates[index], window.location.href).href;
+      const artworkImage = new window.Image();
+      pendingImage = artworkImage;
+      artworkImage.onload = () => {
+        if (cancelled) return;
+        metadata.artwork = [{ src: artworkUrl }];
+      };
+      artworkImage.onerror = () => loadArtwork(index + 1);
+      artworkImage.src = artworkUrl;
+    }
+
+    loadArtwork(0);
+
+    return () => {
+      cancelled = true;
+      if (pendingImage) {
+        pendingImage.onload = null;
+        pendingImage.onerror = null;
+      }
+    };
+  }, [apiBaseUrl, selectedEpisode, playingProgram]);
+
+  // Re-register with the latest playback state and functions after each render.
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+
+    const session = navigator.mediaSession;
+    const handlers: [MediaSessionAction, MediaSessionActionHandler | null][] = [
+      ["play", () => {
+        if (audioRef.current?.paused) void togglePlay();
+      }],
+      ["pause", () => {
+        if (audioRef.current && !audioRef.current.paused) audioRef.current.pause();
+      }],
+      ["seekbackward", () => skip(-15)],
+      ["seekforward", () => skip(30)],
+      ["previoustrack", hasOlderEpisode ? () => selectAdjacentEpisode("older") : null],
+      ["nexttrack", hasNewerEpisode ? () => selectAdjacentEpisode("newer") : null],
+      ["seekto", ({ seekTime }) => {
+        const audio = audioRef.current;
+        if (
+          !audio || audio.readyState === HTMLMediaElement.HAVE_NOTHING ||
+          typeof seekTime !== "number" || !Number.isFinite(seekTime) ||
+          !Number.isFinite(audio.duration) || audio.duration <= 0
+        ) return;
+        seek(Math.min(Math.max(seekTime, 0), audio.duration));
+      }],
+    ];
+
+    for (const [action, handler] of handlers) {
+      try {
+        session.setActionHandler(action, selectedEpisode ? handler : null);
+      } catch {
+        // Browsers may support only a subset of Media Session actions.
+      }
+    }
+
+    return () => {
+      for (const [action] of handlers) {
+        try {
+          session.setActionHandler(action, null);
+        } catch {
+          // Unsupported actions must not affect audio playback.
+        }
+      }
+    };
+  });
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+
+    const session = navigator.mediaSession;
+    session.playbackState = selectedEpisode
+      ? isPlaying ? "playing" : "paused"
+      : "none";
+
+    if (typeof session.setPositionState !== "function") return;
+
+    try {
+      if (!selectedEpisode || !Number.isFinite(duration) || duration <= 0) {
+        session.setPositionState();
+      } else {
+        session.setPositionState({
+          duration,
+          position: Math.min(Math.max(Number.isFinite(currentTime) ? currentTime : 0, 0), duration),
+          playbackRate,
+        });
+      }
+    } catch {
+      // Position reporting is optional and must not interrupt playback.
+    }
+  }, [selectedEpisode, isPlaying, duration, currentTime, playbackRate]);
+
+  useEffect(() => {
+    return () => {
+      if (!("mediaSession" in navigator)) return;
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
+      try {
+        navigator.mediaSession.setPositionState?.();
+      } catch {
+        // Position reporting may not be supported.
+      }
+    };
+  }, []);
+
   const screen = selectedProgram ? (
       <>
         <GlobalStyles />
