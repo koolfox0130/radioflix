@@ -7,6 +7,7 @@ services:
       RFRIENDS_GATEWAY_URL: http://rfriends-gateway:8011
       RFRIENDS_TOKEN_FILE: /run/secrets/rfriends_token
       RFRIENDS_AREA: ${RFRIENDS_AREA:-JP13}
+      RFRIENDS_ENABLE_WRITES: ${RFRIENDS_ENABLE_WRITES:-0}
     volumes:
       - radioflix-reservations:/data
     secrets:

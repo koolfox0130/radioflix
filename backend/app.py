@@ -28,12 +28,6 @@ except ImportError:
     MP4Cover = None
 
 
-reservation_service = ReservationService(
-    ReservationStore(os.getenv("RADIOFLIX_DB_PATH", str(Path(__file__).parent / "data/radioflix.sqlite3"))),
-    RfriendsAdapter(),
-)
-
-
 @asynccontextmanager
 async def lifespan(application):
     stopped = asyncio.Event()
@@ -111,6 +105,12 @@ THUMBNAIL_FILENAMES = {
 program_service = ProgramService(RADIKO_DIR)
 recommendation_service = RecommendationService(program_service)
 ai_service = AIService()
+reservation_service = ReservationService(
+    ReservationStore(os.getenv("RADIOFLIX_DB_PATH", str(Path(__file__).parent / "data/radioflix.sqlite3"))),
+    RfriendsAdapter(),
+    programs=program_service,
+    writes_enabled=os.getenv("RFRIENDS_ENABLE_WRITES") == "1",
+)
 app.include_router(reservation_router(reservation_service, program_service))
 
 RECORDING_DATETIME_PATTERN = re.compile(

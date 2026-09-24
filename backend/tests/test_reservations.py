@@ -1,5 +1,6 @@
 """Offline API/state-machine tests. No real gateway, network or recorder calls."""
 import io
+import gzip
 import json
 import os
 import secrets
@@ -31,9 +32,13 @@ class FakeAdapter:
         self.inspect_error = None
         self.create_hook = None
         self.cancel_hook = None
+        self.candidates = [broadcast]
 
     def broadcasts(self, program):
         return [self.broadcast]
+
+    def weekly_candidates(self, program, station):
+        return list(self.candidates)
 
     def create(self, job):
         self.creates.append(job)
@@ -59,6 +64,14 @@ class FakeAdapter:
         return {"state": "cancelled"}
 
 
+class FakePrograms:
+    def __init__(self, program):
+        self.program = program
+
+    def find_program(self, program_id):
+        return self.program if self.program["id"] == program_id else None
+
+
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -68,8 +81,10 @@ class ServiceTests(unittest.TestCase):
                                    starts_at=self.now + timedelta(hours=12), ends_at=self.now + timedelta(hours=14))
         self.adapter = FakeAdapter(self.broadcast)
         self.store = ReservationStore(Path(self.temp.name) / "db.sqlite3")
-        self.service = ReservationService(self.store, self.adapter, lambda: self.now)
         self.program = {"id": "program-1", "title": "テスト番組"}
+        self.programs = FakePrograms(self.program)
+        self.service = ReservationService(self.store, self.adapter, lambda: self.now,
+                                          self.programs, writes_enabled=True)
 
     def create(self, mode="once"):
         return self.service.create(self.program, self.broadcast, mode)
@@ -136,13 +151,38 @@ class ServiceTests(unittest.TestCase):
     def test_cancel_failure_keeps_intent_and_stops_weekly_generation(self):
         row = self.create("weekly")
         self.adapter.cancel_error = RecordingError("timeout", "解除結果不明", True)
-        self.assertEqual(self.service.cancel(row["id"])["state"], "cancel_unknown")
+        self.assertEqual(self.service.cancel_subscription(row["id"])["state"], "active")
         self.now += timedelta(days=8)
         self.service.reconcile()
         self.assertEqual(len(self.adapter.creates), 1)
         self.adapter.cancel_error = None
         self.service.reconcile()
-        self.assertEqual(self.service.list()[0]["state"], "cancelled")
+        self.assertEqual(self.service.list_subscriptions()[0]["state"], "cancelled")
+
+    def test_weekly_cancel_audit_reports_gateway_and_database_outcomes(self):
+        subscription = self.create("weekly")
+        events = []
+        result = self.service.cancel_subscription(subscription["id"],
+                                                  audit=lambda stage, **details: events.append((stage, details)))
+        stages = [stage for stage, _ in events]
+        self.assertEqual(result["state"], "cancelled")
+        self.assertEqual(stages, ["subscription_found", "reservation_cancel_start",
+                                  "gateway_inspect_result", "gateway_cancel_result", "db_update_result"])
+        self.assertTrue(events[2][1]["success"])
+        self.assertEqual(events[3][1]["gateway_state"], "cancelled")
+        self.assertTrue(events[4][1]["success"])
+
+    def test_weekly_cancel_audit_reports_gateway_failure(self):
+        subscription = self.create("weekly")
+        self.adapter.cancel_error = RecordingError("timeout", "結果不明", True)
+        events = []
+        result = self.service.cancel_subscription(subscription["id"],
+                                                  audit=lambda stage, **details: events.append((stage, details)))
+        self.assertEqual(result["state"], "active")
+        gateway_event = next(details for stage, details in events if stage == "gateway_cancel_result")
+        self.assertFalse(gateway_event["success"])
+        database_event = next(details for stage, details in events if stage == "db_update_result")
+        self.assertFalse(database_event["success"])
 
     def test_cancel_deterministic_failure_is_not_cancelled(self):
         row = self.create()
@@ -163,19 +203,24 @@ class ServiceTests(unittest.TestCase):
 
     def test_weekly_advances_and_persists_across_restart(self):
         row = self.create("weekly")
-        self.adapter.remote[row["jobs"][0]["id"]] = "elapsed"
-        self.now += timedelta(days=15)
-        restarted = ReservationService(self.store, self.adapter, lambda: self.now)
+        occurrence = self.service.list()[0]
+        self.adapter.remote[occurrence["jobs"][0]["id"]] = "elapsed"
+        expected = self.broadcast.starts_at + timedelta(days=7)
+        self.adapter.candidates = [self.broadcast.model_copy(update={
+            "id": "broadcast-2", "starts_at": expected, "ends_at": expected + timedelta(hours=2)
+        })]
+        self.now += timedelta(days=1)
+        restarted = ReservationService(self.store, self.adapter, lambda: self.now,
+                                       self.programs, writes_enabled=True)
         restarted.reconcile()
-        result = restarted.list()[0]
-        latest = result["jobs"][-1]
-        expected = self.broadcast.starts_at + timedelta(days=21)
-        self.assertEqual(datetime.fromisoformat(latest["payload"]["starts_at"]), expected)
+        subscription = restarted.list_subscriptions()[0]
+        latest = next(item for item in restarted.list() if item["id"] == subscription["current_reservation_id"])
+        self.assertEqual(datetime.fromisoformat(latest["broadcast"]["starts_at"]), expected)
         self.assertEqual(len(self.adapter.creates), 2)
         restarted.reconcile()
         self.assertEqual(len(self.adapter.creates), 2)
-        restarted.cancel(row["id"])
-        self.assertEqual([job["id"] for job in self.adapter.cancels], [latest["id"]])
+        restarted.cancel_subscription(row["id"])
+        self.assertEqual([job["id"] for job in self.adapter.cancels], [latest["jobs"][0]["id"]])
 
     def test_once_completion_never_creates_next_week(self):
         row = self.create()
@@ -211,6 +256,311 @@ class ServiceTests(unittest.TestCase):
             self.create()
         with self.assertRaises(ValidationError):
             Broadcast(id="bad", station="TBS", title="bad", starts_at="2030-01-01T12:00:00", ends_at="2030-01-01T13:00:00")
+
+
+class WeeklySubscriptionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.now = datetime(2030, 1, 1, 12, tzinfo=JST)
+        self.first = Broadcast(id="week-1", station="TBS", title="テスト番組",
+                               starts_at=self.now + timedelta(hours=12),
+                               ends_at=self.now + timedelta(hours=13))
+        self.program = {"id": "program-1", "title": "テスト番組"}
+        self.programs = FakePrograms(self.program)
+        self.adapter = FakeAdapter(self.first)
+        self.store = ReservationStore(Path(self.temp.name) / "db.sqlite3")
+        self.service = ReservationService(self.store, self.adapter, lambda: self.now,
+                                          self.programs, writes_enabled=True)
+
+    def subscribe(self):
+        return self.service.create(self.program, self.first, "weekly")
+
+    def finish_current(self, subscription):
+        occurrence = next(item for item in self.service.list()
+                          if item["id"] == subscription["current_reservation_id"])
+        self.adapter.remote[occurrence["jobs"][0]["id"]] = "elapsed"
+        self.now += timedelta(days=1)
+        return occurrence
+
+    def next_broadcast(self, *, minutes=0, duration=60, title="テスト番組", station="TBS", weeks=1, identifier="week-2"):
+        start = self.first.starts_at + timedelta(days=7 * weeks, minutes=minutes)
+        return Broadcast(id=identifier, station=station, title=title, starts_at=start,
+                         ends_at=start + timedelta(minutes=duration))
+
+    def test_weekly_registration_deduplicates_and_survives_restart(self):
+        first = self.subscribe()
+        second = self.subscribe()
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(len(self.adapter.creates), 1)
+        restarted = ReservationService(self.store, self.adapter, lambda: self.now,
+                                       self.programs, writes_enabled=True)
+        self.assertEqual(restarted.list_subscriptions()[0]["id"], first["id"])
+
+    def test_schedule_unpublished_keeps_subscription_waiting(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        self.adapter.candidates = []
+        self.service.reconcile()
+        result = self.service.list_subscriptions()[0]
+        self.assertEqual(result["state"], "active")
+        self.assertEqual(result["schedule_state"], "waiting_schedule")
+        self.assertIsNone(result["current_reservation_id"])
+
+    def test_one_week_break_advances_expected_week_without_fake_job(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        self.adapter.candidates = []
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 1)
+        self.now = self.first.starts_at + timedelta(days=7, hours=7)
+        following = self.next_broadcast(weeks=2, identifier="week-3")
+        self.adapter.candidates = [following]
+        self.service.reconcile()
+        result = self.service.list_subscriptions()[0]
+        self.assertEqual(result["last_matched_broadcast"]["id"], "week-3")
+        self.assertEqual(len(self.adapter.creates), 2)
+
+    def test_time_duration_and_light_title_changes_are_followed(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        changed = self.next_broadcast(minutes=10, duration=90, title="【新】テスト番組")
+        self.adapter.candidates = [changed]
+        self.service.reconcile()
+        result = self.service.list_subscriptions()[0]
+        self.assertEqual(result["last_matched_broadcast"]["starts_at"], changed.model_dump(mode="json")["starts_at"])
+        self.assertEqual(result["last_matched_broadcast"]["ends_at"], changed.model_dump(mode="json")["ends_at"])
+
+    def test_station_mismatch_and_ambiguous_candidates_never_register(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        self.adapter.candidates = [self.next_broadcast(station="LFR")]
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 1)
+        self.now += timedelta(minutes=31)
+        self.adapter.candidates = [self.next_broadcast(minutes=-10, identifier="a"),
+                                   self.next_broadcast(minutes=10, identifier="b")]
+        self.service.reconcile()
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "ambiguous")
+        self.assertEqual(len(self.adapter.creates), 1)
+
+    def test_repeated_reconcile_creates_only_one_next_occurrence(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        self.adapter.candidates = [self.next_broadcast()]
+        self.service.reconcile()
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 2)
+        linked = [item for item in self.service.list() if item.get("subscription_id") == subscription["id"]]
+        self.assertEqual(len(linked), 2)
+
+    def test_conflict_keeps_subscription_and_occurrence_for_safe_retry(self):
+        self.adapter.create_error = RecordingError("conflict", "既存予約があります。")
+        subscription = self.subscribe()
+        self.assertEqual(subscription["state"], "active")
+        self.assertEqual(subscription["schedule_state"], "create_failed")
+        self.assertEqual(len(self.service.list()), 1)
+
+    def test_cancel_is_idempotent_and_only_cancels_current_owned_job(self):
+        subscription = self.subscribe()
+        occurrence = self.service.list()[0]
+        first = self.service.cancel_subscription(subscription["id"])
+        second = self.service.cancel_subscription(subscription["id"])
+        self.assertEqual(first["state"], "cancelled")
+        self.assertEqual(second["state"], "cancelled")
+        self.assertEqual([job["id"] for job in self.adapter.cancels], [occurrence["jobs"][0]["id"]])
+
+    def test_running_occurrence_is_not_claimed_cancelled(self):
+        subscription = self.subscribe()
+        occurrence = self.service.list()[0]
+        self.adapter.cancel_error = RecordingError("too_late", "録音中です。")
+        self.service.cancel_subscription(subscription["id"])
+        current = next(item for item in self.service.list() if item["id"] == occurrence["id"])
+        self.assertEqual(current["state"], "cancel_failed")
+        self.assertEqual(self.adapter.remote[occurrence["jobs"][0]["id"]], "scheduled")
+
+    def test_writes_disabled_persists_and_never_calls_create_or_cancel(self):
+        service = ReservationService(self.store, self.adapter, lambda: self.now,
+                                     self.programs, writes_enabled=False)
+        subscription = service.create(self.program, self.first, "weekly")
+        self.assertEqual(service.list_subscriptions()[0]["schedule_state"], "waiting_write")
+        self.assertFalse(self.adapter.creates)
+        service.reconcile()
+        self.assertFalse(self.adapter.creates)
+        service.cancel_subscription(subscription["id"])
+        self.assertFalse(self.adapter.cancels)
+        self.assertEqual(service.list_subscriptions()[0]["state"], "cancelled")
+
+    def test_weekly_registration_success(self):
+        subscription = self.subscribe()
+        self.assertEqual(subscription["state"], "active")
+        self.assertEqual(subscription["schedule_state"], "scheduled")
+        self.assertEqual(self.service.list()[0]["subscription_id"], subscription["id"])
+
+    def test_weekly_concurrent_registration_deduplicates(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            rows = list(pool.map(lambda _: self.subscribe(), range(2)))
+        self.assertEqual(rows[0]["id"], rows[1]["id"])
+        self.assertEqual(len(self.adapter.creates), 1)
+
+    def test_restart_opens_existing_database(self):
+        subscription = self.subscribe()
+        restarted = ReservationService(ReservationStore(self.store.path), self.adapter,
+                                       lambda: self.now, self.programs, writes_enabled=True)
+        self.assertEqual(restarted.list_subscriptions()[0]["id"], subscription["id"])
+        self.assertEqual(restarted.list()[0]["id"], subscription["current_reservation_id"])
+
+    def test_start_time_changes_ten_and_thirty_minutes(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        for weeks, minutes in ((1, 10), (2, 30)):
+            candidate = self.next_broadcast(weeks=weeks, minutes=minutes, identifier=f"week-{weeks + 1}")
+            self.adapter.candidates = [candidate]
+            self.service.reconcile()
+            subscription = self.service.list_subscriptions()[0]
+            self.assertEqual(subscription["last_matched_broadcast"]["starts_at"], candidate.starts_at.isoformat())
+            # The normal weekly anchor must not drift with each temporary delay.
+            self.assertEqual(datetime.fromisoformat(subscription["next_expected_at"]),
+                             self.first.starts_at + timedelta(weeks=weeks + 1))
+            self.finish_current(subscription)
+            self.now = candidate.ends_at + timedelta(hours=1)
+
+    def test_duration_extension_and_shortening(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        for weeks, duration in ((1, 90), (2, 30)):
+            candidate = self.next_broadcast(weeks=weeks, duration=duration, identifier=f"duration-{weeks}")
+            self.adapter.candidates = [candidate]
+            self.service.reconcile()
+            subscription = self.service.list_subscriptions()[0]
+            self.assertEqual(subscription["last_matched_broadcast"]["ends_at"], candidate.ends_at.isoformat())
+            self.finish_current(subscription)
+            self.now = candidate.ends_at + timedelta(hours=1)
+
+    def test_wrong_title_outside_window_and_past_never_match(self):
+        subscription = self.subscribe()
+        self.finish_current(subscription)
+        self.adapter.candidates = [self.next_broadcast(title="別番組"),
+                                   self.next_broadcast(minutes=121, identifier="late"),
+                                   self.first]
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 1)
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "waiting_schedule")
+
+    def test_scheduled_time_change_cancels_before_replacement_and_keeps_history(self):
+        subscription = self.subscribe()
+        original = self.service.list()[0]
+        candidate = self.next_broadcast(weeks=0, minutes=30, duration=90, identifier="changed")
+        self.adapter.candidates = [candidate]
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 1)
+        self.assertEqual(self.adapter.remote[original["jobs"][0]["id"]], "cancelled")
+        restarted = ReservationService(ReservationStore(self.store.path), self.adapter,
+                                       lambda: self.now, self.programs, writes_enabled=True)
+        restarted.reconcile()
+        restarted.reconcile()
+        rows = restarted.list()
+        self.assertEqual(len(self.adapter.creates), 2)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(row["state"] == "active" for row in rows), 1)
+        old = next(row for row in rows if row["id"] == original["id"])
+        self.assertEqual(old["state"], "cancelled")
+        self.assertEqual(old["broadcast"], original["broadcast"])
+        self.assertTrue(all(row["created_at"] and row["updated_at"] and row["subscription_id"] == subscription["id"] for row in rows))
+
+    def test_schedule_replacement_cancel_failure_never_creates_second_job(self):
+        self.subscribe()
+        self.adapter.candidates = [self.next_broadcast(weeks=0, minutes=10, identifier="changed")]
+        self.adapter.cancel_error = RecordingError("ownership", "所有情報を確認できません。", True)
+        self.service.reconcile()
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 1)
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "cancel_unknown")
+        self.adapter.cancel_error = None
+        self.service.reconcile()
+        self.assertEqual(len(self.adapter.creates), 2)
+
+    def test_cancel_failure_remains_active_and_retry_succeeds(self):
+        subscription = self.subscribe()
+        self.adapter.cancel_error = RecordingError("unreachable", "解除できません。", True)
+        failed = self.service.cancel_subscription(subscription["id"])
+        self.assertEqual(failed["state"], "active")
+        self.assertEqual(failed["schedule_state"], "cancel_unknown")
+        self.assertTrue(failed["cancel_requested"])
+        self.assertEqual(failed["message"], "解除できません。")
+        self.adapter.cancel_error = None
+        result = self.service.cancel_subscription(subscription["id"])
+        self.assertEqual(result["state"], "cancelled")
+        self.assertEqual(len(self.service.list()), 1)
+
+    def test_running_job_is_never_sent_to_cancel(self):
+        subscription = self.subscribe()
+        job = self.service.list()[0]["jobs"][0]
+        self.adapter.remote[job["id"]] = "running"
+        result = self.service.cancel_subscription(subscription["id"])
+        self.assertEqual(result["state"], "active")
+        self.assertEqual(result["schedule_state"], "cancel_failed")
+        self.assertFalse(self.adapter.cancels)
+        self.adapter.remote[job["id"]] = "elapsed"
+        self.service.reconcile()
+        self.assertEqual(self.service.list_subscriptions()[0]["state"], "cancelled")
+
+    def test_cancel_weekly_leaves_unrelated_reservations_untouched(self):
+        subscription = self.subscribe()
+        once = self.service.create({"id": "other", "title": "別番組"}, self.next_broadcast(station="LFR"), "once")
+        self.service.cancel_subscription(subscription["id"])
+        self.assertEqual(self.adapter.remote[once["jobs"][0]["id"]], "scheduled")
+        self.assertNotIn(once["jobs"][0]["id"], [job["id"] for job in self.adapter.cancels])
+
+    def test_disabled_writes_never_reach_gateway_transport(self):
+        adapter = RfriendsAdapter(url="http://fake.invalid", token_file=str(Path(self.temp.name) / "token"))
+        service = ReservationService(self.store, adapter, lambda: self.now, self.programs, writes_enabled=False)
+        with patch.object(adapter, "_call", side_effect=AssertionError("No gateway call allowed")):
+            subscription = service.create(self.program, self.first, "weekly")
+            service.cancel_subscription(subscription["id"])
+        self.assertEqual(service.list_subscriptions()[0]["state"], "cancelled")
+
+    def test_scheduled_ambiguous_change_keeps_original(self):
+        self.subscribe()
+        self.adapter.candidates = [self.next_broadcast(weeks=0, minutes=10, identifier="a"),
+                                   self.next_broadcast(weeks=0, minutes=30, identifier="b")]
+        self.service.reconcile()
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "ambiguous")
+        self.assertFalse(self.adapter.cancels)
+        self.assertEqual(len(self.adapter.creates), 1)
+
+
+    def test_replacement_crash_keeps_new_broadcast_and_anchor_atomic(self):
+        self.subscribe()
+        changed = self.next_broadcast(weeks=0, minutes=30, identifier="changed")
+        self.adapter.candidates = [changed]
+        self.service.reconcile()
+        def crash(job):
+            raise KeyboardInterrupt()
+        self.adapter.create_hook = crash
+        with self.assertRaises(KeyboardInterrupt):
+            self.service.reconcile()
+        self.adapter.create_hook = None
+        restarted = ReservationService(ReservationStore(self.store.path), self.adapter,
+                                       lambda: self.now, self.programs, writes_enabled=True)
+        restarted.reconcile()
+        result = restarted.list_subscriptions()[0]
+        self.assertEqual(result["last_matched_broadcast"]["id"], "changed")
+        self.assertEqual(datetime.fromisoformat(result["next_expected_at"]), self.first.starts_at + timedelta(days=7))
+        self.assertEqual(len(self.adapter.creates), 2)
+        self.assertEqual(len(self.adapter.cancels), 1)
+
+    def test_ambiguous_warning_survives_reconcile_until_schedule_recheck(self):
+        self.subscribe()
+        self.adapter.candidates = []
+        self.service.reconcile()
+        self.service.reconcile()
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "waiting_schedule")
+        self.now += timedelta(minutes=31)
+        self.adapter.candidates = [self.first]
+        self.service.reconcile()
+        self.assertEqual(self.service.list_subscriptions()[0]["schedule_state"], "scheduled")
+
 
 
 class AdapterTests(unittest.TestCase):
@@ -255,6 +605,84 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(first[0].region, 'JP27')
         self.assertEqual(first[0].starts_at.hour, 1)
         transport.assert_called_once()
+
+    @staticmethod
+    def schedule_xml(date='20300102'):
+        return (f'<radiko><stations><station id="TBS"><progs><prog ft="{date}010000" '
+                f'to="{date}030000"><title>Test</title></prog></progs></station></stations></radiko>'
+                .encode())
+
+    @staticmethod
+    def schedule_response(body, content_encoding=None):
+        response = io.BytesIO(body)
+        response.headers = {'Content-Encoding': content_encoding} if content_encoding else {}
+        return response
+
+    def test_schedule_plain_xml_parses(self):
+        with patch('radioflix.adapters.rfriends.urlopen',
+                   return_value=self.schedule_response(self.schedule_xml())):
+            self.assertEqual(len(self.adapter._fetch_day('20300101')), 1)
+
+    def test_schedule_gzip_xml_parses_by_body_magic(self):
+        body = gzip.compress(self.schedule_xml())
+        self.assertEqual(body[:2], b'\x1f\x8b')
+        with patch('radioflix.adapters.rfriends.urlopen',
+                   return_value=self.schedule_response(body)):
+            self.assertEqual(len(self.adapter._fetch_day('20300101')), 1)
+
+    def test_schedule_gzip_header_with_already_decoded_xml_is_not_decompressed(self):
+        with patch('radioflix.adapters.rfriends.urlopen',
+                   return_value=self.schedule_response(self.schedule_xml(), 'gzip')):
+            self.assertEqual(len(self.adapter._fetch_day('20300101')), 1)
+
+    def test_schedule_corrupt_gzip_retries_once_then_fails(self):
+        bad = self.schedule_response(b'\x1f\x8bnot-a-valid-gzip-stream', 'gzip')
+        with patch('radioflix.adapters.rfriends.urlopen', side_effect=[bad, bad]) as transport, \
+                patch('radioflix.adapters.rfriends.time.sleep') as sleep:
+            with self.assertRaises(RecordingError) as caught:
+                self.adapter._day('20300101')
+        self.assertEqual(caught.exception.code, 'schedule_unavailable')
+        self.assertEqual(transport.call_count, 2)
+        sleep.assert_called_once_with(0.2)
+
+    def test_schedule_gzip_failure_retries_and_then_succeeds(self):
+        bad = self.schedule_response(b'\x1f\x8btruncated', 'gzip')
+        good = self.schedule_response(gzip.compress(self.schedule_xml()), 'gzip')
+        with patch('radioflix.adapters.rfriends.urlopen', side_effect=[bad, good]) as transport, \
+                patch('radioflix.adapters.rfriends.time.sleep') as sleep:
+            result = self.adapter._day('20300101')
+        self.assertEqual(len(result), 1)
+        self.assertEqual(transport.call_count, 2)
+        sleep.assert_called_once_with(0.2)
+
+    def test_broadcasts_skips_one_gzip_failure_when_other_days_succeed(self):
+        calls = []
+        now = datetime.now(JST)
+        radio_day = (now - timedelta(hours=5)).date()
+
+        def response(url, timeout):
+            date = url.rsplit('/', 2)[-2]
+            calls.append(date)
+            if date == radio_day.strftime('%Y%m%d'):
+                return self.schedule_response(b'\x1f\x8bbroken-gzip', 'gzip')
+            day = datetime.strptime(date, '%Y%m%d')
+            start = (day + timedelta(days=1)).strftime('%Y%m%d')
+            xml = self.schedule_xml(start)
+            return self.schedule_response(gzip.compress(xml), 'gzip')
+
+        with patch('radioflix.adapters.rfriends.urlopen', side_effect=response), \
+                patch('radioflix.adapters.rfriends.time.sleep'):
+            result = self.adapter.broadcasts({'raw_name': 'TBS_Test', 'title': 'Test'})
+        self.assertEqual(len(calls), 9)
+        self.assertTrue(result)
+
+    def test_broadcasts_raises_when_all_gzip_days_fail(self):
+        bad = self.schedule_response(b'\x1f\x8bbroken-gzip', 'gzip')
+        with patch('radioflix.adapters.rfriends.urlopen', return_value=bad), \
+                patch('radioflix.adapters.rfriends.time.sleep'):
+            with self.assertRaises(RecordingError) as caught:
+                self.adapter.broadcasts({'raw_name': 'TBS_Test', 'title': 'Test'})
+        self.assertEqual(caught.exception.code, 'schedule_unavailable')
 
     def test_entity_xml_and_unpublished_day(self):
         with patch('radioflix.adapters.rfriends.urlopen', return_value=io.BytesIO(b'<!DOCTYPE a><a/>')):

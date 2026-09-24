@@ -32,6 +32,26 @@ class ReservationRequest(BaseModel):
     mode: Literal["once", "weekly"]
 
 
+class WeeklySubscription(BaseModel):
+    id: str
+    program_id: str
+    station: str
+    title: str
+    region: str
+    anchor_weekday: int
+    anchor_time: str
+    state: Literal["active", "cancelled"]
+    schedule_state: str
+    cancel_requested: bool = False
+    current_reservation_id: str | None = None
+    last_matched_broadcast: Broadcast | None = None
+    next_expected_at: datetime
+    next_check_at: datetime | None = None
+    message: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
 class RecordingError(Exception):
     def __init__(self, code: str, message: str, uncertain: bool = False):
         super().__init__(message)

@@ -1,5 +1,6 @@
 """rfriends dependencies stop here. Never include/execute its PHP initializers."""
 import hashlib
+import zlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from radioflix.schemas.reservations import Broadcast, JST, RecordingError
 
 SCHEDULE_UNAVAILABLE_MESSAGE = "放送予定を取得できません。時間をおいて再度お試しください。"
 logger = logging.getLogger(__name__)
+MAX_SCHEDULE_BYTES = 8_000_000
 
 
 class NoGatewayRedirect(HTTPRedirectHandler):
@@ -35,6 +37,12 @@ def normalized_title(value):
     value = unicodedata.normalize("NFKC", value)
     value = value.replace("オールナイトニッポン", "ANN").replace("(ZERO)", "").replace("(クロス)", "").replace("ANNZERO", "ANN0")
     return re.sub(r"[\W_]+", "", value).removeprefix("JUNK").casefold()
+
+
+def weekly_title_key(value):
+    """Normalize only well-known broadcast markers; do not fuzzy-match titles."""
+    value = re.sub(r"(?:[\(（\[【](?:新|終|再)[\)）\]】])", "", value)
+    return normalized_title(value)
 
 
 class RfriendsAdapter:
@@ -101,8 +109,23 @@ class RfriendsAdapter:
     def _fetch_day(self, date):
         url = f"https://radiko.jp/v3/program/date/{date}/{self.area}.xml"
         with urlopen(url, timeout=10) as response:
-            data = response.read(8_000_001)
-        if len(data) > 8_000_000 or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+            data = response.read(MAX_SCHEDULE_BYTES + 1)
+        if len(data) > MAX_SCHEDULE_BYTES:
+            raise ValueError("invalid XML")
+        # urllib does not automatically decode Content-Encoding. Other HTTP
+        # layers may already return plain XML, so inspect the body itself and
+        # never decompress it a second time based on the header alone.
+        if data.startswith(b"\x1f\x8b"):
+            try:
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                expanded = decoder.decompress(data, MAX_SCHEDULE_BYTES + 1)
+                if (len(expanded) > MAX_SCHEDULE_BYTES or not decoder.eof
+                        or decoder.unused_data or decoder.unconsumed_tail):
+                    raise ValueError("invalid compressed XML")
+                data = expanded
+            except zlib.error:
+                raise ValueError("invalid compressed XML") from None
+        if len(data) > MAX_SCHEDULE_BYTES or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
             raise ValueError("invalid XML")
         root = ElementTree.fromstring(data)
         items = []
@@ -134,14 +157,11 @@ class RfriendsAdapter:
                     time.sleep(0.2)
                     continue
                 raise RecordingError("schedule_unavailable", SCHEDULE_UNAVAILABLE_MESSAGE) from None
-            except (OSError, URLError) as error:
+            except (OSError, URLError, ValueError, KeyError, ElementTree.ParseError) as error:
                 self._log_schedule_failure(date, error, retried)
                 if not retried:
                     time.sleep(0.2)
                     continue
-                raise RecordingError("schedule_unavailable", SCHEDULE_UNAVAILABLE_MESSAGE) from None
-            except (ValueError, KeyError, ElementTree.ParseError) as error:
-                self._log_schedule_failure(date, error, retried)
                 raise RecordingError("schedule_unavailable", SCHEDULE_UNAVAILABLE_MESSAGE) from None
         with self._lock:
             self._cache[date] = (time.monotonic() + 300, items)
@@ -177,4 +197,21 @@ class RfriendsAdapter:
         unique = {item.id: item for items in days for item in items
                   if item.station == station and normalized_title(item.title) == title
                   and item.starts_at > now + timedelta(minutes=3)}
+        return sorted(unique.values(), key=lambda item: item.starts_at)
+
+    def weekly_candidates(self, program, station):
+        """Return future station programmes; the service applies recurrence rules."""
+        now = datetime.now(JST)
+        day = (now - timedelta(hours=5)).date()
+        dates = [(day + timedelta(days=i)).strftime("%Y%m%d") for i in range(8)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(self._safe_day, dates))
+        failures = [date for date, result in zip(dates, results) if isinstance(result, RecordingError)]
+        days = [result for result in results if not isinstance(result, RecordingError)]
+        if failures:
+            logger.warning("radiko weekly schedule skipped failed days dates=%s", ",".join(failures))
+        if not days and failures:
+            raise RecordingError("schedule_unavailable", SCHEDULE_UNAVAILABLE_MESSAGE)
+        unique = {item.id: item for items in days for item in items
+                  if item.station == station and item.starts_at > now + timedelta(minutes=3)}
         return sorted(unique.values(), key=lambda item: item.starts_at)

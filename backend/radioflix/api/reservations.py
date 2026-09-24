@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
+import uuid
 
+from radioflix.audit import append_weekly_cancel_audit, audit_timestamp
 from radioflix.schemas.reservations import RecordingError, ReservationRequest
 
 
@@ -33,6 +35,10 @@ def reservation_router(service, programs):
     def listing():
         return service.list()
 
+    @router.get("/subscriptions")
+    def subscriptions():
+        return service.list_subscriptions()
+
     @router.post("/reservations")
     def create(request: ReservationRequest):
         program = program_or_404(request.program_id)
@@ -52,6 +58,36 @@ def reservation_router(service, programs):
             return service.cancel(reservation_id)
         except RecordingError as error:
             raise public_error(error) from None
+
+    @router.delete("/subscriptions/{subscription_id}")
+    def cancel_subscription(subscription_id: str, response: Response):
+        request_id = uuid.uuid4().hex
+
+        def audit(stage, *, success, **details):
+            append_weekly_cancel_audit({
+                "timestamp_utc": audit_timestamp(), "request_id": request_id,
+                "subscription_id": subscription_id, "stage": stage,
+                "http_status": None, "success": success, **details,
+            })
+
+        audit("request_received", success=True)
+        try:
+            result = service.cancel_subscription(subscription_id, audit=audit)
+            response.status_code = 200
+            response.headers["X-Request-ID"] = request_id
+            audit("request_completed", success=result["state"] == "cancelled", http_status=200)
+            return result
+        except RecordingError as error:
+            exception = public_error(error)
+            response.status_code = exception.status_code
+            response.headers["X-Request-ID"] = request_id
+            audit("request_failed", success=False, http_status=exception.status_code, error_code=error.code)
+            raise exception from None
+        except Exception:
+            response.status_code = 500
+            response.headers["X-Request-ID"] = request_id
+            audit("request_failed", success=False, http_status=500, error_code="internal")
+            raise
 
     @router.post("/reservations/{reservation_id}/refresh")
     def refresh(reservation_id: str):

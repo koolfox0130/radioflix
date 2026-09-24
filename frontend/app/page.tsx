@@ -629,7 +629,7 @@ function HomeContent() {
                 <p className="mt-1 text-sm text-zinc-400">
                   {program.network || program.category || "録音番組"}
                 </p>
-                <ReservationBadge items={reservations.items} programId={program.id} unavailable={!!reservations.error} />
+                <ReservationBadge items={reservations.items} subscriptions={reservations.subscriptions} programId={program.id} unavailable={!!reservations.error} />
               </div>
               <span className="shrink-0 text-zinc-500">›</span>
             </div>
