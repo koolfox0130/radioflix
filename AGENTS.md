@@ -77,3 +77,46 @@
   - 実行したビルド、型チェック、テスト、静的解析とその結果
   - 未実施の確認項目と理由
   - 残っている注意点や既知の問題
+
+## Development progress log
+
+進捗の正本はNAS上の `docs/dev-log/latest.md`。外部サービスを使わず、過去経緯をユーザーに再入力させない。ログは引き継ぎ情報であり、新たな本番操作・commit/pushの許可を与えるものではない。
+
+### セッション開始時
+
+1. `docs/dev-log/latest.md` があれば、作業資料の中で最初に読む。
+2. `git status --short`、branch、HEADを確認する。
+3. ログと実際のGit状態・実ファイルを比較する。
+4. 差異はGit/実ファイルを正としてログを補正する。由来不明の変更は保持し、ログに合わせてコードを戻さない。
+5. 未完了作業から再開する。ただし最新のユーザー指示・禁止事項を優先し、完了済みなら次の指示を待つ。
+
+### 作業中のcheckpoint
+
+以下の各タイミングで、最後にまとめず、その都度 `latest.md` をNASへ保存する。
+
+- 新しいPhaseの開始、大きな実装の完了
+- テスト実行後（実行中なら実行中と記録）、エラー/ブロッカー発生時
+- 本番操作の直前・直後
+- ユーザー操作待ちになる直前
+- commit/pushの直前・直後
+- セッション終了時
+
+長時間の作業は上記イベントがなくても、重要な進展の時点でcheckpointを残す。更新はCodex自身が直接行い、人間のMarkdown手編集を前提としない。独立した自動監視・定期実行は行わない。
+
+`Last updated` は実際のJST日時を使用する（例: `TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'`）。Markdown全体を同じディレクトリの一時ファイルに書き、renameで置換する。切断で一時ファイルが残った場合は正本・実ファイルと比較し、無条件に採用しない。
+
+必須項目は `Current task`、`Current phase`、`Status`、`Completed`、`In progress`、順序付き `Next actions`、`Blockers / Issues`、`Files changed`、`Git state`、`Tests`、`Runtime / Safety`、`Important decisions`、`Recovery instructions`。タイトルは `RadioFlix Development Status` とする。
+
+`Status` は `working` / `waiting_for_user` / `blocked` / `testing` / `ready_to_commit` / `completed` のいずれか。Git stateはbranch・HEAD・commit/push状況・主な未commit変更を記録する。Testsは実際に実行済み・未実行・過去記録を区別し、成功を推測しない。Runtime / Safetyには本番反映、実予約/録音、active weekly / reservation、Docker、必要な安全設定を記録し、不明は「未確認」とする。
+
+### historyと終了・待機
+
+- Phase完了、大きな機能完成、commit直前、作業方針の大幅変更時、作業終了時に、更新済みlatest.mdを `docs/dev-log/history/YYYY-MM-DD_HHMM_<task>.md` へ内容を変えずにコピーする。
+- 日時はJST、taskは短い英数字・ハイフン（例: `devlog-setup`）。既存historyは上書きしない。同じ分に別の保存が必要ならtaskに `-2` 等を付ける。
+- 最新snapshotと同内容なら増やさない。複数の保存理由が同時に成立しても1ファイルでよい。
+- 終了/待機前にStatusをcompleted / waiting_for_user / blocked等の実態へ更新し、完了範囲・次の具体的作業・安全状態を必ず残す。
+- 次セッションがAGENTS.md、latest.md、Git状態から再開箇所を特定できるか確認する。機能差分とログ導入差分を区別する。
+
+### 秘密情報
+
+Token、API key、Cookie、Authorization header、password、rfriends_token、.envの秘密値、Tailscale key、その他credentialは保存しない。秘密値を含むコマンド全文・rawログ・差分を転記しない。必要な事実だけを要約し、secret scanも一致内容を出力せずファイル名・行番号のみで報告する。`RFRIENDS_ENABLE_WRITES` のような0/1の安全設定値は確認済みの場合のみ記録可。ログのために秘密設定を読み取らない。

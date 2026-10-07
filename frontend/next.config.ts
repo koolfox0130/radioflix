@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["radioflix.kool-fox.com"],
   async rewrites() {
     return [
+      ...["stations", "schedule", "broadcasts"].map(resource => ({
+        source: `/api/${resource}/:path*`, destination: `${apiBaseUrl}/api/${resource}/:path*`,
+      })),
       {
         source: "/api/subscriptions/:path*",
         destination: `${apiBaseUrl}/api/subscriptions/:path*`,

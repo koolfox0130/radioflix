@@ -65,24 +65,40 @@ class ReservationService:
                 item["message"] = "録音側の確認が遅れています。状態を再確認してください。"
         return items
 
+    def _overlap(self, a, b):
+        return a.station == b.station and a.starts_at < b.ends_at and b.starts_at < a.ends_at
+
+    def _existing_weekly(self, db, program, broadcast):
+        matches = [s for s in self.store.subscriptions(db) if s["state"] == "active"
+                   and s["station"] == broadcast.station and
+                   (s["program_id"] == program["id"] or
+                    (s["title_key"] == weekly_title_key(broadcast.title)
+                     and s["anchor_weekday"] == broadcast.starts_at.weekday()
+                     and abs((datetime.combine(broadcast.starts_at.date(),
+                              datetime.strptime(s["anchor_time"], "%H:%M:%S").time(), JST)
+                              - broadcast.starts_at).total_seconds()) <= 7200))]
+        if len(matches) > 1:
+            raise RecordingError("ambiguous", "毎週予約の候補が複数あります。予約一覧を確認してください。")
+        return matches[0] if matches else None
+
     def create(self, program, broadcast, mode):
         if mode == "weekly":
             return self.create_weekly(program, broadcast)
         if broadcast.starts_at <= self.clock() + timedelta(minutes=3):
             raise RecordingError("too_late", "開始3分前を過ぎたため予約できません。")
         with self.store.locked() as db:
+            if self._existing_weekly(db, program, broadcast):
+                raise RecordingError("mode_conflict", "毎週録音中です。予約一覧を確認してください。")
             for existing in self.store.listing(db):
                 if existing["state"] in ("cancelled", "completed"):
                     continue
                 old = Broadcast.model_validate(existing["broadcast"])
-                same_slot = (old.station == broadcast.station
-                             and old.starts_at.weekday() == broadcast.starts_at.weekday()
-                             and old.starts_at.time() == broadcast.starts_at.time())
-                if existing["program_id"] == program["id"] and (old.id == broadcast.id or
-                        (same_slot and (mode == "weekly" or existing["mode"] == "weekly"))):
-                    if existing["mode"] != mode:
-                        raise RecordingError("mode_conflict", "別の方式で予約済みです。変更する場合は既存予約を解除してください。")
-                    return existing
+                if self._overlap(old, broadcast):
+                    if existing.get("subscription_id"):
+                        raise RecordingError("mode_conflict", "毎週録音中です。予約一覧を確認してください。")
+                    if old.id == broadcast.id:
+                        return existing
+                    raise RecordingError("conflict", "同じ放送局・時間帯の予約があります。既存予約は変更していません。")
             reservation_id = uuid.uuid4().hex
             now = self.clock().isoformat()
             db.execute("""INSERT INTO reservations
@@ -103,18 +119,13 @@ class ReservationService:
         if broadcast.starts_at <= self.clock() + timedelta(minutes=3):
             raise RecordingError("too_late", "開始3分前を過ぎたため予約できません。")
         with self.store.locked() as db:
-            for reservation in self.store.listing(db):
-                if (reservation["program_id"] == program["id"]
-                        and reservation["state"] not in ("cancelled", "completed")
-                        and reservation["broadcast"]["id"] == broadcast.id
-                        and not reservation.get("subscription_id")):
-                    raise RecordingError("mode_conflict", "同じ放送回を単発予約済みです。毎週録音へ変更する場合は先に解除してください。")
-            existing = db.execute(
-                "SELECT id FROM weekly_subscriptions WHERE program_id=? AND station=? AND state='active'",
-                (program["id"], broadcast.station),
-            ).fetchone()
+            existing = self._existing_weekly(db, program, broadcast)
             if existing:
-                return next(item for item in self.store.subscriptions(db) if item["id"] == existing["id"])
+                return existing
+            for reservation in self.store.listing(db):
+                if (reservation["state"] not in ("cancelled", "completed")
+                        and self._overlap(Broadcast.model_validate(reservation["broadcast"]), broadcast)):
+                    raise RecordingError("mode_conflict", "同じ放送局・時間帯を予約済みです。既存予約は変更していません。")
             subscription_id = uuid.uuid4().hex
             now = self.clock().isoformat()
             try:
@@ -141,6 +152,9 @@ class ReservationService:
             return next(item for item in self.store.subscriptions(db) if item["id"] == subscription_id)
 
     def _create_occurrence(self, db, program, broadcast, subscription_id, expected=None):
+        for existing in self.store.listing(db):
+            if existing["state"] not in ("cancelled", "completed") and self._overlap(Broadcast.model_validate(existing["broadcast"]), broadcast):
+                raise RecordingError("conflict", "同じ放送局・時間帯の予約があります。既存予約は変更していません。")
         reservation_id = uuid.uuid4().hex
         now = self.clock().isoformat()
         db.execute("""INSERT INTO reservations
@@ -342,8 +356,11 @@ class ReservationService:
                        (duplicate["id"], self.clock().isoformat(), subscription["id"]))
             db.commit()
             return
-        reservation = self._create_occurrence(db, program, broadcast, subscription["id"], expected)
-        self._sync_subscription(db, subscription["id"], reservation)
+        try:
+            reservation = self._create_occurrence(db, program, broadcast, subscription["id"], expected)
+            self._sync_subscription(db, subscription["id"], reservation)
+        except RecordingError as error:
+            self._wait_for_schedule(db, subscription, error.message, "conflict")
 
     def _wait_for_schedule(self, db, subscription, message, state, expected=None):
         db.execute("""UPDATE weekly_subscriptions SET schedule_state=?,message=?,next_expected_at=?,

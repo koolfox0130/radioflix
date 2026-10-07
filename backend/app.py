@@ -111,6 +111,15 @@ reservation_service = ReservationService(
     programs=program_service,
     writes_enabled=os.getenv("RFRIENDS_ENABLE_WRITES") == "1",
 )
+from radioflix.adapters.schedule import ScheduleAdapter
+from radioflix.api.schedule import schedule_router
+from radioflix.services.schedule_service import ProgramCatalog, ScheduleService, NativeReservations
+
+program_catalog = ProgramCatalog(reservation_service.store, program_service)
+reservation_service.programs = program_catalog
+schedule_service = ScheduleService(ScheduleAdapter(), reservation_service, program_catalog,
+    NativeReservations(os.getenv("RADIOFLIX_NATIVE_RESERVATIONS_DIR")))
+app.include_router(schedule_router(schedule_service))
 app.include_router(reservation_router(reservation_service, program_service))
 
 RECORDING_DATETIME_PATTERN = re.compile(

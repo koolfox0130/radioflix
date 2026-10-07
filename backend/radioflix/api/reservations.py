@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 import uuid
 
+from radioflix.api.recording_auth import recording_authorization
 from radioflix.audit import append_weekly_cancel_audit, audit_timestamp
 from radioflix.schemas.reservations import RecordingError, ReservationRequest
 
@@ -9,7 +10,7 @@ def reservation_router(service, programs):
     def no_cache(response: Response):
         response.headers["Cache-Control"] = "no-store"
 
-    router = APIRouter(prefix="/api", tags=["reservations"], dependencies=[Depends(no_cache)])
+    router = APIRouter(prefix="/api", tags=["reservations"], dependencies=[Depends(no_cache), Depends(recording_authorization(service))])
 
     def public_error(error):
         return HTTPException(404 if error.code == "not_found" else 503 if error.uncertain else 409,

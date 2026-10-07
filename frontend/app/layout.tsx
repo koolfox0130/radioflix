@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import Navigation from "./components/Navigation";
 import PwaRegister from "./pwa-register";
 
 export const metadata: Metadata = {
@@ -44,14 +45,16 @@ export const viewport: Viewport = {
 
 export default function RootLayout({
   children,
+  modal,
 }: Readonly<{
   children: React.ReactNode;
+  modal: React.ReactNode;
 }>) {
   return (
     <html lang="ja">
       <body>
         <PwaRegister />
-        {children}
+        <Navigation>{children}{modal}</Navigation>
       </body>
     </html>
   );

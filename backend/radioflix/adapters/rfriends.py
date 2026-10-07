@@ -106,10 +106,8 @@ class RfriendsAdapter:
         logger.warning("radiko schedule fetch failed date=%s status=%s exception=%s retry=%s",
                        date, status, type(error).__name__, retried)
 
-    def _fetch_day(self, date):
-        url = f"https://radiko.jp/v3/program/date/{date}/{self.area}.xml"
-        with urlopen(url, timeout=10) as response:
-            data = response.read(MAX_SCHEDULE_BYTES + 1)
+    @staticmethod
+    def _parse_xml(data):
         if len(data) > MAX_SCHEDULE_BYTES:
             raise ValueError("invalid XML")
         # urllib does not automatically decode Content-Encoding. Other HTTP
@@ -127,7 +125,13 @@ class RfriendsAdapter:
                 raise ValueError("invalid compressed XML") from None
         if len(data) > MAX_SCHEDULE_BYTES or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
             raise ValueError("invalid XML")
-        root = ElementTree.fromstring(data)
+        return ElementTree.fromstring(data)
+
+    def _fetch_day(self, date):
+        url = f"https://radiko.jp/v3/program/date/{date}/{self.area}.xml"
+        with urlopen(url, timeout=10) as response:
+            data = response.read(MAX_SCHEDULE_BYTES + 1)
+        root = self._parse_xml(data)
         items = []
         for station in root.findall(".//station"):
             for prog in station.findall("./progs/prog"):
