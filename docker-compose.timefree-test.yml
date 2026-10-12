@@ -1,0 +1,19 @@
+# Standalone offline PHP boundary. Never combine with production Compose.
+services:
+  timefree-fixture:
+    image: rfriends3-rfriends3:latest
+    entrypoint: ["php", "/opt/radioflix/worker.php", "--fixture"]
+    stdin_open: true
+    network_mode: none
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      RFRIENDS_ENABLE_WRITES: "0"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./backend/radioflix/timefree:/opt/radioflix:ro
+      - /tmp/radioflix-phase4-source:/opt/rfriends-source:ro

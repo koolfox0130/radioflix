@@ -1,98 +1,75 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-08 07:43:13 JST
+2026-10-12 20:44:48 JST
 
 ## Current task
-Phase1〜3正式Git checkpointのレビュー・テスト・1 commit・origin main push。
+Phase 4安全基盤の最終レビュー・検証と、指定範囲を1 commitにまとめてorigin/mainへpushする。実取得bootstrap実装は開始しない。
 
 ## Current phase
-全レビュー・最終テスト成功。指定1 commit直前。
+Phase 4の安全基盤完成。実radiko音声取得bootstrapは未接続。本番workerは未deploy。
 
 ## Status
 ready_to_commit
 
 ## Completed
-- AGENTS/latestとmain開始HEAD 20b379703bc36818e5d37616cec927b19ba973c9、既存差分を照合。
-- Phase2 Androidはユーザー確認済み。単発・weekly本番受入PASSはhistory/2026-10-06_0757_once-acceptance-pass.md、history/2026-10-07_0537_weekly-acceptance-pass.md参照。
-- 今回本番受入は再実行しない。
+- Phase 1〜3正式リリース済み。今回のGit実状態を確認し、Phase 4差分は保持。.codex/config.tomlとfrontend/Dockerfile.dev-backup、frontend/Dockerfile.productionはcommit対象外。
+- Unix socket専用worker transport、検証済みjob_idのみ通知、workerでDB正式metadata再取得、専用の二重gateを実装。
+- 開始前/公開前にnative、通常録音、RadioFlix job、timefree job、正式metadataをread-only再照合。
+- hidden stagingで音声検証・manifest/fsync・DB intent保存後、RENAME_NOREPLACEで公開し、証拠の揃った実ファイルだけcompleted扱いにする。
+- backend/workerの再起動・中断を実ファイルとDB intentからreconcile。曖昧な状態を自動再録音/完了扱いしない。
+- 番組表過去録音状態、重複送信防止、offline拒否、pollingと専用候補Composeを実装。mock/PHP隔離テストを維持。
+- 今回指定の検証を再実行してPASS。指定commit messageで1 commit、その後origin mainへpushする。これは今回のユーザー明示指示による。
 
 ## In progress
-全レビュー・最終テスト成功。指定1 commit直前。
+- commit直前。stage済みallowlistのdiff/list/secret scanは確認済み。これからcommitする。
+- commit成功後、同一HEADをorigin/mainへpushして検証する。
 
 ## Next actions
-1. 全差分レビュー、指定テスト、安全確認、選別stage。
-2. 全確認通過後、Add RadioFlix program guide and schedule recording の1 commit、git push origin main。
-3. HEADとorigin/main照合、ログ更新して停止。Phase4は開始しない。
+1. 完了: 明示allowlistの30ファイルをstage。excluded 3ファイルはunstaged保持。
+2. `Add isolated RadioFlix timefree recording runtime` として1 commitを作成する。
+3. `git push origin main` を実行し、HEADとorigin/mainの一致を確認する。
+4. latest.mdをcommit/push済み最終状態へ更新し、最終history snapshotを保存する（1 commit制約のためログ最終checkpointはcommit後の作業差分として残す）。
 
 ## Blockers / Issues
-commitのblockerなし。ブラウザ用認証プロキシ/Origin設定と翌週への実時間経過試験は過去受入対象外であり、今回完成判定はユーザー指定の正式API受入範囲。
+- 実radiko audio bootstrap未接続。`capture_ready=false`。今回のコードは実録音を起動できない。本番隔離worker反映も未実施。
+- 実形式WAV以外は未対応。NAS本番パスのowner/permission/fsync受入は未確認。
+- native worker間で共通lockなし。照合直後の外部同時native開始を完全排除する仕組みではない。
+- 今回native予約dat/shの指紋と本番4コンテナは不変。at spoolは前後の集約指紋が変化した。隔離試験はnetwork noneで本番mount/at queueへ接続せず、当作業からat操作していない。変化元はこの観測だけでは特定できない。
+- lintに既存warning 5件。実録音・本番DB E2E・Android実機確認は未実施。
 
 ## Files changed
-ソース既存差分をレビュー。今回の新規編集はdev-logとfrontend/tests/schedule-ui.mjsのSSRテスト時計修正。除外: .env、secrets、.codex/config.toml、frontend/Dockerfile.dev-backup、frontend/Dockerfile.production、credential、/tmp。
+commit候補はbackend API/service/store/timefree worker一式、backend既存app/schedule接続とtest dependency、backend tests、timefree test/deploy-candidate Compose、番組表UI/API rewrite/UI test、Phase 4 validation/runtime docsと既存history、latest.md。明示的なstaged allowlistで確定する。
+除外: `.codex/config.toml`、`frontend/Dockerfile.dev-backup`、`frontend/Dockerfile.production`、secret/.env/credential、`/tmp`。値・内容を取得していない。
 
 ## Git state
-main / 開始HEAD 20b379703bc36818e5d37616cec927b19ba973c9。開始時tracked8変更、API/UI/tests/docs未追跡。commit/push未実施。fetch後origin/mainも同じ開始HEAD。レビュー済みファイルだけ選別stage予定。
+main / precommit HEAD d46babe85db84b4ee08ff1ccf3d14fe97ed4fa0f。origin/mainもprecommit時点で同一。30件を32件を明示stage済み。cached diff check/secret scan PASS、staged一覧にcredential/除外fileなし。commit/pushは未実施。除外ファイルは未stageで保持。
 
 ## Tests
-今回実行結果:
-- backend unittest: 130件すべて成功、skip0。PHP10件も既存imageの隔離テストコンテナ（networkなし、本番mountなし、fake at）で成功。テストコンテナ削除済み。
-- py_compile: backend31ファイル成功。
-- frontend番組表UI: 104チェック、360/390/412/1280pxすべて成功。
-- playback/navigation: 360px21チェック成功。reservation UI: 360/1280px24シナリオ成功。
-- npx tsc --noEmit / npm run build: 成功。npm run lint: エラー0・既存警告5。修正したUIテストのeslintも成功。
-- git diff --check / 選別対象全文のsecret pattern scan: PASS。
-- 初回sandbox backendはTestClient付近で停止したため今回のプロセスのみ終了。隔離実行へ切替後は成功。
-- 初回PHPコンテナ都度起動で2件timeout。専用隔離コンテナ1個で全130件を再実行し成功。
-- 番組表UI初回timeout・再実行でSSR/ブラウザ日付不一致を検出。テストサーバーにも10/05基準の時計を設定し全104チェック成功。製品コード変更なし。
+今回実行済み:
+- backend/PHP/worker全188件成功、skip 0（network none、read-only、UID1000、cap-drop ALL。code/source/依存ro、専用test volumeのみ書込）。
+- Python `py_compile`: 43 files PASS。PHP `-l` worker.php/fixture-bindings.php PASS。
+- schedule UI 148 checks PASS（360/390/412/1280px）。reservation UI 24 scenarios PASS（360/1280px）。playback/navigation 21 checks PASS（360px）。全て隔離mock。
+- `npx tsc --noEmit` PASS。`npm run lint` error 0、既存warning 5。`npm run build` PASS。
+- test volumeでatomic publish/no-replace、collision、SIGKILL中断/復旧、unknownと再録音防止などruntime testsを実行。
+- Compose config `--quiet` PASS。PHP source-manifest hash PASS。
+- `git diff --check` PASS。secret pattern scan 29 changed/new files、findings 0（内容を出さず）。
+- 初回sandbox制限でNext local serverのport bindが失敗したため、同じ隔離mock UIテストとbuildを許可付きで再実行し成功。Host PHPは未導入だがPHP test/syntaxは専用既存imageで実行。
+- 本番公開先E2E、実radiko認証/HLS/録音、実機Androidは未実施。禁止/未接続のため。
 
 ## Runtime / Safety
-開始時全7箇所writes=0、4サービスrunningを読み取り確認。active reservation=0/weekly=0確認。commit直前も全7箇所0と4サービスID/StartedAt/RestartCount不変を再確認済み。writes変更・実予約・実録音・rfriends3変更・Docker restart/recreate禁止。
+- `RFRIENDS_ENABLE_WRITES=0`（backend実効環境）。timefree gateはproduction backendに未設定＝既定OFF。test containerでは両gateを明示0。
+- RadioFlix SQLite読み取り集計: active reservation 0、active weekly 0、timefree table absent（active/running job 0）。recording_jobsもactiveなし。列挙は状態別件数だけで秘密/番組情報は出力していない。
+- 本番4コンテナのID/state/StartedAt/RestartCount/gate前後比較一致。全てrunning、RestartCount 0。rfriends3 running、healthcheck未定義。本番worker containerなし。
+- native reservation dat/sh files: 18件、集約指紋は前後一致。at spoolは各11/2件、集約指紋が前後で変化。作業はnative dat/sh/atを書き込む処理を含まない。変化元は未確認であり、不変と断定しない。
+- 本番timefree録音なし: YES。実録音なし、両gateを1にしていない。backend/PHP/worker試験はmock/合成音声、network none。
+- 本番worker deploy/restart/recreateなし。本番録音volumeへのwriteなし。今回専用test volumeを削除済み。専用review imageは過去build状態で残る。
+- 本番隔離worker反映試験: まだ実施せず。両gate OFFの候補はあるが、NAS mount permission/fsync受入・個別反映許可が必要。実タイムフリー1本試験: NO、bootstrap未接続のため進行不可。
 
 ## Important decisions
-ユーザーが今回に限り指定メッセージの1 commitとorigin main pushを明示許可。禁止ファイルを一括addしない。
-commit後の実ID/push結果を記す最終ログは、追加commitせずローカル差分として残す（1 commit制約）。
+- commit対象は明示allowlist。未追跡一括addを使わない。.env/secrets/token/cookie/Authorization/.codex/指定Dockerfile/tmpは除外。
+- commitは指定メッセージで1個。commit後latest/history最終更新はその1 commitに含めず、working treeに残す。push後HEAD == origin/mainを確認する。
+- 二重gate、CaptureUnavailable、network-none testで実録音経路が閉じている。今回の検証PASSを実録音・本番deploy許可として扱わない。
 
 ## Recovery instructions
-Git状態・テスト結果を確認し、既存差分を戻さない。commit済みなら同じcommitを重複作成しない。秘密値は表示・保存しない。
-
-## Reviewed file list
-- `AGENTS.md`
-- `backend/app.py`
-- `backend/radioflix/adapters/rfriends.py`
-- `backend/radioflix/adapters/schedule.py`
-- `backend/radioflix/api/recording_auth.py`
-- `backend/radioflix/api/reservations.py`
-- `backend/radioflix/api/schedule.py`
-- `backend/radioflix/services/reservation_service.py`
-- `backend/radioflix/services/schedule_service.py`
-- `backend/tests/test_schedule.py`
-- `docker-compose.rfriends.yml`
-- `docs/dev-log/history/2026-09-26_1704_devlog-setup.md`
-- `docs/dev-log/history/2026-09-28_0819_phase2-ui.md`
-- `docs/dev-log/history/2026-09-28_0901_phase2-ui.md`
-- `docs/dev-log/history/2026-09-28_1949_deploy-safety.md`
-- `docs/dev-log/history/2026-09-28_2132_compose-audit.md`
-- `docs/dev-log/history/2026-09-29_0516_android-limited-deploy.md`
-- `docs/dev-log/history/2026-10-05_0821_schedule-weekday.md`
-- `docs/dev-log/history/2026-10-05_2304_weekday-frontend-deploy.md`
-- `docs/dev-log/history/2026-10-05_2312_once-preflight-blocked.md`
-- `docs/dev-log/history/2026-10-05_2324_backend-config-connect.md`
-- `docs/dev-log/history/2026-10-06_0745_native-station-fix.md`
-- `docs/dev-log/history/2026-10-06_0757_once-acceptance-pass.md`
-- `docs/dev-log/history/2026-10-07_0537_weekly-acceptance-pass.md`
-- `docs/dev-log/latest.md`
-- `docs/radioflix-program-guide-phase123-implementation.md`
-- `docs/radioflix-program-guide-timefree-design.md`
-- `frontend/app/@modal/(.)reservations/page.tsx`
-- `frontend/app/@modal/(.)schedule/page.tsx`
-- `frontend/app/@modal/default.tsx`
-- `frontend/app/@modal/page.tsx`
-- `frontend/app/components/InterceptedRoute.tsx`
-- `frontend/app/components/Navigation.tsx`
-- `frontend/app/components/PrimaryRouteContext.tsx`
-- `frontend/app/layout.tsx`
-- `frontend/app/schedule/page.tsx`
-- `frontend/next.config.ts`
-- `frontend/tests/playback-navigation-ui.mjs`
-- `frontend/tests/schedule-ui.mjs`
+次はstaged filename/diff/secret scanを確認し、明示許可された1 commitとpushを完了する。ログとコードを戻す目的のreset/restoreは使わない。push後はHEADとorigin/mainを比較し、latest.mdとhistoryへ結果を記録する。続く作業は実radiko bootstrapの隔離開発だけで、実録音は別途許可と本番受入が必要。

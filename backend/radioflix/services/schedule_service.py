@@ -150,6 +150,7 @@ class ScheduleService:
         self.adapter, self.reservations, self.catalog = adapter, reservations, catalog
         self.native = native or NativeReservations()
         self.clock = clock or reservations.clock
+        self.timefree = None
 
     def validate_dates(self, dates):
         today = (self.clock() - timedelta(hours=5)).date()
@@ -200,11 +201,14 @@ class ScheduleService:
         if station and station not in {s['id'] for s in stations}:
             raise RecordingError('station', '放送局を確認してください。')
         rows, subs = self.reservations.list(), self.reservations.list_subscriptions()
+        timefree_jobs = self.timefree.list() if self.timefree else []
         native = self.native_snapshot(rows, {s['id'] for s in stations})
         days = []
         for source in self.adapter.days(dates):
             day = {**source}
             day['broadcasts'] = [self.status(b, rows, subs, native) for b in source['broadcasts'] if not station or b['station'] == station]
+            if self.timefree:
+                day['broadcasts'] = [{**b, **self.timefree.project(b, timefree_jobs)} for b in day['broadcasts']]
             if day['availability'] == 'ok' and not day['broadcasts']:
                 day['availability'] = 'station_missing'
             days.append(day)

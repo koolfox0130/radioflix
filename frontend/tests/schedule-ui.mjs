@@ -75,12 +75,22 @@ try {
     const labels = ["09/28(月)", "09/29(火)", "09/30(水)", "10/01(木)", "10/02(金)", "10/03(土)", "10/04(日)", "10/05(月) 今日", "10/06(火)", "10/07(水)", "10/08(木)", "10/09(金)", "10/10(土)", "10/11(日)", "10/12(月)"];
     const offset = n => new Date(Date.parse(today+"T12:00:00Z")+n*86400000).toISOString().slice(0,10);
     let failed = false, posts = 0, mode = "", state = "未予約", postFailure = false;
+    let timefreeState = "available", timefreePosts = 0, timefreeFailure = false, timefreeEnabled = true;
+    const timefreeLabels = { available: "録音", queued: "録音待ち", running: "録音中…", completed: "録音済み", failed: "録音失敗", expired: "期限切れ", unknown: "録音状態確認待ち", cancelled: "取消済み" };
     const seen = [];
     const reply = (route, data, status=200) => route.fulfill({status, contentType:"application/json",body:JSON.stringify(data)});
     await context.route("**/*", async route => {
       const request = route.request(), url = new URL(request.url());
       if (url.origin !== origin) return route.abort();
       if (!url.pathname.startsWith("/api/")) return route.continue();
+      if (url.pathname === "/api/timefree/jobs") {
+        assert.equal(request.method(), "POST");
+        assert.deepEqual(Object.keys(request.postDataJSON()).sort(), ["broadcast_episode_id", "date", "schedule_revision"]);
+        timefreePosts++;
+        if (timefreeFailure) return reply(route, { detail: { message: "タイムフリー録音は無効です。" } }, 409);
+        timefreeState = "queued";
+        return reply(route, { job_id: "fixture-timefree", state: "queued" }, 202);
+      }
       if (url.pathname === "/api/stations") return reply(route,{stations:[{id:"JORF",name:"ラジオ日本"},{id:"TBS",name:"TBSラジオ"}]});
       if (request.method() === "POST") {
         assert.equal(url.pathname, "/api/broadcasts/slot/reservations");
@@ -95,7 +105,8 @@ try {
       return reply(route,{today,writes_enabled:false,days:[{radio_date:date,availability:failed?"fetch_failed":"ok",broadcasts:failed?[]:[{
         id:"slot",station,station_name:station==="JORF"?"ラジオ日本":"TBSラジオ",title:"長い番組名 テスト番組 番組表の折り返し表示確認用タイトル",performer:"テスト出演者",
         starts_at:date+"T12:00:00+09:00",ends_at:date+"T13:00:00+09:00",schedule_revision:"a".repeat(64),
-        reservation_label:state,recording_state:"unknown",native_state:"unknown",allowed_actions:past||state!=="未予約"?[]:["once","weekly"],timefree_message:past?"タイムフリー録音は準備中":"",
+        reservation_label:state,recording_state:"unknown",native_state:"unknown",allowed_actions:past||state!=="未予約"?[]:["once","weekly"],timefree_message:past?"past":"",
+        ...(past ? { timefree_state: timefreeState, timefree_label: timefreeLabels[timefreeState], timefree_enabled: timefreeEnabled && timefreeState === "available" } : {}),
       }]}]});
     });
     await page.goto(base); await page.getByText("テスト出演者",{exact:true}).waitFor();
@@ -138,7 +149,40 @@ try {
     await once.evaluate(b=>{b.click();b.click();});await page.locator("summary").filter({hasText:"今回のみ予約済み"}).waitFor();assert.equal(posts,1);assert.equal(mode,"once");checks++;
     state="未予約";await page.getByRole("button",{name:"再読み込み"}).click();await page.locator("summary").waitFor();await page.locator("summary").click();await page.getByRole("button",{name:"毎週録音",exact:true}).click();await page.locator("summary").filter({hasText:"毎週録音中"}).waitFor();assert.equal(posts,2);assert.equal(mode,"weekly");checks++;
     state="未予約";postFailure=true;await page.getByRole("button",{name:"再読み込み"}).click();await page.locator("summary").waitFor();await page.locator("summary").click();await page.getByRole("button",{name:"今回だけ録音",exact:true}).click();await page.getByText("rfriends3で予約済みです。既存予約は変更していません。",{exact:true}).waitFor();checks++;
-    await page.getByRole("button",{name:labels[7 + -1],exact:true}).click();await page.locator("summary").waitFor();await page.locator("summary").click();await page.getByText("タイムフリー録音は準備中",{exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"今回だけ録音",exact:true}).count(),0);checks++;
+    await page.getByRole("button",{name:labels[7 + -1],exact:true}).click();await page.locator("summary").waitFor();await page.locator("summary").click();
+    const record = page.getByRole("button", { name: "録音", exact: true });
+    await record.waitFor(); assert.equal(await page.getByRole("button",{name:"今回だけ録音",exact:true}).count(),0);checks++;
+    assert((await record.boundingBox()).height >= 48); checks++;
+    await context.setOffline(true);
+    await record.click();
+    await page.getByText("オフラインでは録音できません。", { exact: true }).waitFor();
+    assert.equal(timefreePosts, 0); checks++;
+    await context.setOffline(false);
+    timefreeFailure = true;
+    await record.click();
+    await page.getByText("タイムフリー録音は無効です。", { exact: true }).waitFor();
+    await page.locator("summary").waitFor(); await page.locator("summary").click();
+    await record.waitFor(); assert.equal(timefreePosts, 1); checks++;
+    timefreeFailure = false;
+    await record.evaluate(b => { b.click(); b.click(); });
+    await page.locator("summary").waitFor(); await page.locator("summary").click();
+    await page.getByRole("button", { name: "録音待ち", exact: true }).waitFor();
+    assert.equal(timefreePosts, 2); checks++;
+    timefreeState = "running";
+    const running = page.getByRole("button", { name: timefreeLabels.running, exact: true });
+    await running.waitFor(); assert(await running.isDisabled()); checks++;
+    for (const nextState of ["completed", "failed", "expired", "unknown", "cancelled"]) {
+      timefreeState = nextState;
+      await page.getByRole("button", { name: "再読み込み" }).click();
+      await page.locator("summary").waitFor(); await page.locator("summary").click();
+      const status = page.getByRole("button", { name: timefreeLabels[nextState], exact: true });
+      await status.waitFor(); assert(await status.isDisabled()); checks++;
+    }
+    timefreeState = "available"; timefreeEnabled = false;
+    await page.getByRole("button", { name: "再読み込み" }).click();
+    await page.locator("summary").waitFor(); await page.locator("summary").click();
+    await page.getByText("タイムフリー録音は現在無効です。", { exact: true }).waitFor();
+    assert(await record.isDisabled()); assert.equal(timefreePosts, 2); checks++;
     failed=true;await page.getByRole("button",{name:"再読み込み"}).click();await page.getByRole("alert").filter({hasText:"この日の番組表を取得できませんでした"}).waitFor();assert.equal(await page.locator("summary").count(),0);checks++;
     failed=false;await page.getByRole("button",{name:"ラジオ日本",exact:true}).click();await page.locator("summary").waitFor();checks++;
     const navigationPage=await context.newPage();let documentRequests=0;
@@ -165,6 +209,15 @@ try {
   }
   console.log(`PASS ${checks} schedule UI checks`);
 
+} catch (error) {
+  // All pages contain fixture data only; retain evidence before teardown.
+  let index = 0;
+  for (const context of browser?.contexts() || []) for (const page of context.pages()) {
+    const artifact = path.join(tmpdir(), `radioflix-schedule-failure-${index++}`);
+    await page.screenshot({ path: `${artifact}.png`, fullPage: true }).catch(() => {});
+    await writeFile(`${artifact}.txt`, await page.locator("body").innerText().catch(() => "page unavailable"));
+  }
+  throw error;
 } finally {
   await browser?.close();
   if (server && server.exitCode === null) {

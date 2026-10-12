@@ -32,6 +32,19 @@ except ImportError:
 async def lifespan(application):
     stopped = asyncio.Event()
 
+    async def notify_timefree():
+        # Retry the durable outbox after either service restarts. Only IDs cross
+        # the socket; gate OFF never invokes the transport.
+        while not stopped.is_set():
+            try:
+                await asyncio.to_thread(timefree_service.dispatch_pending)
+            except Exception:
+                logging.getLogger(__name__).error('タイムフリーworkerへの通知を確認できません。')
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=10)
+            except TimeoutError:
+                pass
+
     async def reconcile_reservations():
         while not stopped.is_set():
             try:
@@ -44,16 +57,19 @@ async def lifespan(application):
                 pass
 
     task = asyncio.create_task(reconcile_reservations()) if os.getenv("RFRIENDS_GATEWAY_URL") else None
+    timefree_task = asyncio.create_task(notify_timefree()) if os.getenv('RADIOFLIX_TIMEFREE_SOCKET') else None
     try:
         yield
     finally:
         stopped.set()
-        if task:
+        for running_task in (task, timefree_task):
+            if running_task is None:
+                continue
             # A reconcile may be waiting on a gateway/SQLite operation.  Do
             # not let TestClient or process shutdown wait indefinitely for it.
-            task.cancel()
+            running_task.cancel()
             try:
-                await asyncio.wait_for(task, timeout=2)
+                await asyncio.wait_for(running_task, timeout=2)
             except (asyncio.CancelledError, TimeoutError):
                 pass
 
@@ -121,6 +137,18 @@ schedule_service = ScheduleService(ScheduleAdapter(), reservation_service, progr
     NativeReservations(os.getenv("RADIOFLIX_NATIVE_RESERVATIONS_DIR")))
 app.include_router(schedule_router(schedule_service))
 app.include_router(reservation_router(reservation_service, program_service))
+
+from radioflix.timefree.store import TimefreeStore
+from radioflix.timefree.service import TimefreeService
+from radioflix.timefree.transport import WorkerClient
+from radioflix.api.timefree import timefree_router
+
+timefree_socket = os.getenv('RADIOFLIX_TIMEFREE_SOCKET')
+timefree_service = TimefreeService(TimefreeStore(reservation_service.store.path), schedule_service,
+    dispatcher=WorkerClient(timefree_socket) if timefree_socket else None,
+    output_root='/timefree' if timefree_socket else None)
+schedule_service.timefree = timefree_service
+app.include_router(timefree_router(timefree_service))
 
 RECORDING_DATETIME_PATTERN = re.compile(
     r"_(?P<date>\d{8})_(?P<start>\d{4})_(?P<end>\d{4})(?:_|\.|$)"

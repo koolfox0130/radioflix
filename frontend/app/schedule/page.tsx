@@ -8,6 +8,7 @@ type Broadcast = {
   starts_at: string; ends_at: string; schedule_revision: string;
   reservation_label: string; recording_state: string; native_state: string;
   allowed_actions: string[]; timefree_message: string;
+  timefree_state?: string; timefree_label?: string; timefree_enabled?: boolean;
 };
 type Schedule = { today: string; writes_enabled: boolean; days: { radio_date: string; availability: string; broadcasts: Broadcast[] }[] };
 const failure = "この日の番組表を取得できませんでした";
@@ -123,6 +124,11 @@ function ScheduleContent() {
     }).catch(() => { if (!controller.signal.aborted && current === generation.current) { setError(failure); setLoading(false); } });
     return () => controller.abort();
   }, [station, date, refresh, hydrated]);
+  useEffect(() => {
+    if (!data?.days.some(day => day.broadcasts.some(b => ["queued", "running"].includes(b.timefree_state || "")))) return;
+    const timer = window.setInterval(() => setRefresh(value => value + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, [data]);
   function change(nextDate: string, nextStation: string) {
     if (nextDate === date && nextStation === station) return;
     if (dateRail.current) window.sessionStorage.setItem(scheduleScrollKey(), String(dateRail.current.scrollLeft));
@@ -145,6 +151,17 @@ function ScheduleContent() {
     });
   }
   function reload() { generation.current++; setLoading(true); setData(null); setError(""); setRefresh(value => value + 1); }
+  async function recordPast(b: Broadcast) {
+    if (submitting.current || !b.timefree_enabled) return;
+    if (!navigator.onLine) { setMessage("オフラインでは録音できません。"); return; }
+    submitting.current = true; setBusy(true);
+    try {
+      await api("/api/timefree/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ broadcast_episode_id: b.id, schedule_revision: b.schedule_revision, date }) });
+      setMessage("録音待ち");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "録音状態を確認してください。"); }
+    finally { submitting.current = false; setBusy(false); reload(); }
+  }
   async function reserve(b: Broadcast, mode: string) {
     if (submitting.current) return;
     if (!navigator.onLine) { setMessage("オフラインでは予約できません。"); return; }
@@ -198,14 +215,20 @@ function ScheduleContent() {
             <span className="mt-2 block text-sm text-amber-200">{b.reservation_label}</span>
           </summary>
           <div className="mt-4 space-y-3">
-            <p className="text-sm text-zinc-400">録音状態：未確認</p>
+            <p className="text-sm text-zinc-400">録音状態：{b.timefree_label && b.timefree_state !== "available" ? b.timefree_label : "未確認"}</p>
             {b.native_state === "unknown" && <p className="text-sm text-zinc-400">rfriends3の既存予約は未確認です。</p>}
             {b.allowed_actions.length > 0 && <div className="flex flex-wrap gap-2">
               {[["once", "今回だけ録音"], ["weekly", "毎週録音"]].map(([mode, label]) => <button type="button" key={mode}
                 disabled={busy || !b.allowed_actions.includes(mode)} onClick={() => void reserve(b, mode)}
                 className="min-h-12 flex-1 rounded-lg bg-white px-3 py-2 text-zinc-950 disabled:opacity-40">{label}</button>)}
             </div>}
-            {b.timefree_message && <p>{b.timefree_message}</p>}
+            {b.timefree_message && (b.timefree_state ? <div className="space-y-2">
+              <button type="button" disabled={busy || !b.timefree_enabled || b.timefree_state !== "available"}
+                onClick={() => void recordPast(b)} className="min-h-12 rounded-lg bg-white px-5 py-2 text-zinc-950 disabled:opacity-50">
+                {b.timefree_label || "録音"}
+              </button>
+              {b.timefree_state === "available" && !b.timefree_enabled && <p>タイムフリー録音は現在無効です。</p>}
+            </div> : <p>{b.timefree_message}</p>)}
             {!b.timefree_message && !b.allowed_actions.length && b.reservation_label === "未予約" && <p>開始直前のため予約できません。</p>}
           </div>
         </details>)}</div>}

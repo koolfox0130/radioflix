@@ -1,0 +1,54 @@
+# Gate-OFF deployment candidate. NOT deployed by implementation/test commands.
+# Combine with docker-compose.yml and docker-compose.rfriends.yml only after review.
+services:
+  backend:
+    environment:
+      RADIOFLIX_TIMEFREE_SOCKET: /run/timefree/control.sock
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+    volumes:
+      - radioflix-timefree-control:/run/timefree
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+        target: /timefree
+        read_only: true
+        bind:
+          create_host_path: false
+
+  timefree-worker:
+    build: ./backend
+    image: radioflix-timefree-worker:review
+    command: ["python", "-m", "radioflix.timefree.control"]
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RFRIENDS_ENABLE_WRITES: "0"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+    volumes:
+      - radioflix-reservations:/data
+      - radioflix-timefree-control:/run/timefree
+      - /home/kool-fox/Share/Radio/rfriends3/data/rsv:/native-reservations:ro
+      - /volume1/@home/kool-fox/radiko_public/radiko:/recordings:ro
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/timefree
+        target: /native-timefree
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+        target: /timefree
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+volumes:
+  radioflix-timefree-control:
