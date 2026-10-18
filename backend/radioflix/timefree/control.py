@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from radioflix.timefree.bootstrap import ProductionBootstrap
 from radioflix.timefree.preflight import Preflight
 from radioflix.timefree.publisher import job_id
 from radioflix.timefree.service import live_gate
@@ -19,16 +20,6 @@ from radioflix.timefree.worker import TimefreeWorker
 class Dispatch(BaseModel):
     model_config = ConfigDict(extra='forbid')
     job_id: str = Field(pattern=r'^[a-f0-9]{32}$')
-
-
-class CaptureUnavailable:
-    # The control transport is production code; the real radiko acquisition
-    # bootstrap is not approved/installed in this gate-OFF deployment image.
-    kind = 'live'
-    ready = False
-
-    def run(self, row, work):
-        raise ValueError('capture_unavailable')
 
 
 class Controller:
@@ -109,7 +100,9 @@ def production_app():
     store = TimefreeStore(os.getenv('RADIOFLIX_DB_PATH', '/data/radioflix.sqlite3'))
     root = Path('/timefree')  # Fixed managed root, no request-selected paths.
     guard = Preflight(store, '/native-reservations', ['/recordings', '/native-timefree'], root)
-    return create_app(Controller(TimefreeWorker(store, root, CaptureUnavailable(), preflight=guard)))
+    manifest = Path(__file__).with_name('bootstrap-source-manifest.json')
+    capture = ProductionBootstrap(source_root=Path('/rfriends-source'), manifest=manifest)
+    return create_app(Controller(TimefreeWorker(store, root, capture, preflight=guard)))
 
 
 def main():

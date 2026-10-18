@@ -97,3 +97,59 @@ python3 -m unittest discover -s /code/tests -q
 ```
 
 本番同等Python3.14の専用review imageは別途ビルドし、tmpfsだけをマウントしてhealth/ゲートOFF/DB未作成を確認する。既存4コンテナはinspectのみ。最終結果と前後比較は `docs/dev-log/latest.md` とhistory参照。
+
+## rfriends3 bootstrap source audit（2026-10-16）
+
+稼働中 `rfriends3` の `/home/user/rfriends3/script` から対象sourceを読み取り専用で取得し、fingerprintを確認した。既存fixture manifestの `rf_timefree.php` / `rf_downloader.php` は稼働中sourceと一致した。追加候補sourceと用途・hash・関数名は `backend/radioflix/timefree/bootstrap-source-manifest.json` に固定した。候補は次の6ファイルに限定し、manifest不一致は失敗させる。
+
+| source | 対象関数 | 理由 |
+|---|---|---|
+| `script/rf_timefree.php` | `timefree_kwrec_ex`, `timefree_check`, stream URL helpers | timefree処理 |
+| `script/rf_downloader.php` | `rfriends_downloader` | 既存取得・変換・保存処理 |
+| `script/rf_radiko.php` | `rfriends_auth_radiko` | 認証 |
+| `script/rf_gateway_def.php` | `rfgw_ffmpeg_opt` | ffmpeg option生成 |
+| `script/rf_common04.php` | `get_para`, `get_fnam`, `fnam_edit` | 予約metadata/filename helper |
+| `script/rf_common.php` | `rf_movefile` | downloader file move helper |
+
+既存処理をそのまま呼べる安全な境界は確認できなかった。`timefree_kwrec_ex()` は入力queue fileを最後に削除・再作成し、cancel marker時にprocessを `exit` する。`rfriends_downloader()` は多数の設定globalを必要とし、shell文字列でffmpegを実行し、通常録音directoryへのmove、通常録音後処理・transfer hookを呼ぶ。汎用retry branchもあるが、通常の `ex_timefree` typeでは条件上実行されない。timefree stream/auth関数の依存全体と、CLI初期化なしで使える設定契約も未確認である。batch functionを隔離queueへ向けるだけでは副作用を閉じられず、downloaderをshell/API境界の安全な下位処理へ分けるか、rfriends側に検証可能なargument-based library APIが必要となる。
+
+`bootstrap.py` とbootstrap source manifestを追加し、source allowlist/hash検証、job/pathのfail-closed判定、二重gateのOFF時拒否を用意した。secretは存在・型だけを検査する設計で内容は読まない。現時点の `ProductionBootstrap.ready` と `bridge_approved` はfalse固定で、PHPを起動せず、上記source関数も呼ばない。これはproduction capture bootstrap完成ではなく、未承認source bridgeを実行不能に保つpreflight境界である。fixture runnerは引き続き合成WAVとfake auth/downloaderのみを使用する。
+
+## Capture dependency graph audit（2026-10-16、read-only）
+
+現行稼働中rfriends3 sourceをread-onlyで追跡した。以下は関数間の実行経路であり、RadioFlixから呼び出してよいという意味ではない。
+
+```text
+RadioFlix job metadata
+  └─ timefree_kwrec_ex()                         [C: 呼ばない]
+       ├─ queue file読取・削除・再作成、cancel markerでprocess exit
+       └─ rfriends_downloader(ex_timefree, ...)
+            ├─ rfriends_auth_radiko() → rf_auth()
+            │    ├─ normal / auth-mode2 / auth-mode3 / premium auth helpers
+            │    └─ rf_wget() → external_program() → system(command string)
+            ├─ get_timefree_stream_url*()
+            │    ├─ wget command string → external_program() → system()
+            │    └─ temp URL/playlist file write/read/cleanup
+            ├─ rfgw_ffmpeg_opt() → option string + config/global依存
+            ├─ external_program("$expgm $opt $recfiletmp.$dwn")
+            │    └─ bindir + command string → system()
+            ├─ optional ffmpeg conversion command string → external_program()
+            ├─ get_recdir(ex_timefree) → configured timefree/normal recording root
+            ├─ fnam_edit() → configured output name
+            ├─ mkdir / rf_movefile(copy, sleep, unlink) → recording rootへ保存
+            └─ rec_file_check(), logging, rftrans_job()等の通常録音後処理
+```
+
+`rfriends_downloader()` は多数のglobal/config値（tmpdir/cfgdir/usrdir、録音先、拡張子、認証・地域、proxy/header、録音状態、ログ等）を参照する。認証・playlist/HLS・ffmpegのコマンド文字列を作る層が `external_program()` に集まり、同関数は `system()` を実行する。入力値をargvとして渡すAPIではない。固定作業dirを指定しても、通常保存先へのmove、ファイル管理、後処理hookは残る。汎用 `rf_rsv_retry()` 呼び出しは `ex_radiko` / `ex_radiru` 条件であり、通常の `ex_timefree` 経路では呼ばれない。
+
+| 分類 | 関数/層 | 判断 |
+|---|---|---|
+| A: 入出力を伴わず再利用可能 | `get_radiko_streamurlhls_sel()`、`rf_radiko_make_rectime*()` | XML選択・時刻表現の限定的helper。音声取得境界ではない。 |
+| B: 明示的path/config注入が成立する場合に限る | `get_recdir()`、`fnam_edit()`、`calc_timefree_timeout()`、`rf_diff_timefree()` | global/config依存または環境時刻依存。単独helperとして扱える余地はあるが、downloaderの安全化を提供しない。 |
+| C: bridgeから直接利用不可 | `timefree_kwrec_ex()`、`rfriends_downloader()`、`rfriends_auth_radiko()`/`rf_auth()`の現行orchestrator、`get_timefree_stream_url*()`、`rf_wget()`、`external_program()`、`rfgw_ffmpeg_opt()`、`rf_movefile()`、`rftrans_job()` | queue/process/secret/network/file/global/shell/output副作用がある。コマンド文字列・通常保存先・共通後処理を閉じられない。 |
+
+認証と音声取得に必要な処理を、現行sourceだけで「固定実行ファイル＋argv配列＋RadioFlix専用temp/output」に閉じる下位APIは確認できなかった。特に `rfriends_downloader()` から下位helperだけを呼んでも、現行radiko auth/HLS helperが `rf_wget()` / `external_program()` に戻る。CLIの `rf_inc.php` 初期化はさらに予約・共通処理・設定群を読み込むため使えない。したがって結論は **安全に直接再利用できる境界なし**。bootstrap/manifestの候補登録は実行許可ではなく、既存 `ProductionBootstrap.ready=false` を維持する。
+
+将来接続するには、rfriends側に副作用を持たないauth/playlist/HLSライブラリAPIとargv型の取得実行APIを追加し、そのAPIに必要なsourceだけを固定fingerprintで束ねる必要がある。これは今回禁止されたrfriends3変更に当たり、実施していない。現行 `docker-compose.timefree.yml` はPython-onlyかつ `network_mode: none` であり、本番capture serviceとして完成扱いにしない。PHP runtime/source/secret/限定egressを設計・起動する段階にも進まない。
+
+本番候補 `docker-compose.timefree.yml` はPython専用imageで、PHP runtime・rfriends source bundle・radiko credential fileを提供せず、`network_mode: none` でもあるため、実radiko接続を行うworker Composeとして未完成である。今回Compose変更やdeployは行っていない。次の設計では安全なCLI-free source boundaryと最小source bundleを確定してから、read-only source/secret mount・非root PHP runtime・timefree専用write root・radiko限定egressを別サービスにする。二重gateは維持する。

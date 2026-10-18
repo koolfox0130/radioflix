@@ -1,75 +1,87 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-12 20:44:48 JST
+2026-10-19 08:09:33 JST
 
 ## Current task
-Phase 4安全基盤の最終レビュー・検証と、指定範囲を1 commitにまとめてorigin/mainへpushする。実取得bootstrap実装は開始しない。
+fail-closed RadioFlix timefree bootstrapとrfriends3 dependency investigationを独立checkpointとしてcommit/pushする。
 
 ## Current phase
-Phase 4の安全基盤完成。実radiko音声取得bootstrapは未接続。本番workerは未deploy。
+Phase 4 fail-closed bootstrap checkpoint。Safe Capture Adapterは未実装。
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Phase 1〜3正式リリース済み。今回のGit実状態を確認し、Phase 4差分は保持。.codex/config.tomlとfrontend/Dockerfile.dev-backup、frontend/Dockerfile.productionはcommit対象外。
-- Unix socket専用worker transport、検証済みjob_idのみ通知、workerでDB正式metadata再取得、専用の二重gateを実装。
-- 開始前/公開前にnative、通常録音、RadioFlix job、timefree job、正式metadataをread-only再照合。
-- hidden stagingで音声検証・manifest/fsync・DB intent保存後、RENAME_NOREPLACEで公開し、証拠の揃った実ファイルだけcompleted扱いにする。
-- backend/workerの再起動・中断を実ファイルとDB intentからreconcile。曖昧な状態を自動再録音/完了扱いしない。
-- 番組表過去録音状態、重複送信防止、offline拒否、pollingと専用候補Composeを実装。mock/PHP隔離テストを維持。
-- 今回指定の検証を再実行してPASS。指定commit messageで1 commit、その後origin mainへpushする。これは今回のユーザー明示指示による。
+- 開始時branch `main`、HEAD/origin/main `2ad058817b520e85f8f830ac160bf617afbf9f69` を確認。checkpointと一致。既存のlatest変更・未追跡ファイルは保持。
+- `/home/user/rfriends3/script/rf_timefree.php` と `rf_downloader.php` を稼働中rfriends3から読み取り専用で調査。2ファイルのhashはfixture manifestと一致。
+- 直接依存候補として `rf_radiko.php`、`rf_gateway_def.php`、`rf_common04.php`、`rf_common.php` も確認し、6 sourceのpath/purpose/function/hash/requiredをbootstrap source manifestに記録。
+- `timefree_kwrec_ex()` → `rfriends_downloader()`、認証/HLS → `rf_wget()` → `external_program()` → `system(command string)`、ffmpeg、temp、出力move、log/cleanup/post-processingまで関数単位で追跡し、A/B/C分類と結論をruntime docへ追記。
+- 安全なauth/HLS取得用のargv型・path注入型library APIは現行sourceに存在しないと判定。両timefree関数はproduction bridgeから直接使わず、bridgeを作らずfail-closedを維持。
+- `backend/radioflix/timefree/bootstrap.py` にallowlist/hash/path検証と二重gateのfail-closed境界を追加。bridgeは承認false/ready false固定で、PHPやrfriends関数を起動しない。
+- 2026-10-19にbackend/PHP/worker、bootstrap、frontend回帰・型・lint・buildを再実行。schedule UIは中断前のrunがexit 0で148 checks PASS、その後の連続2 runもPASS。
 
 ## In progress
-- commit直前。stage済みallowlistのdiff/list/secret scanは確認済み。これからcommitする。
-- commit成功後、同一HEADをorigin/mainへpushして検証する。
+- rfriends3に副作用を隔離した認証・HLS・取得APIがない。rfriends3側で専用library API/argv境界を設けない限りcapture bridgeに進めない。
+- production用PHP runtime/source bundle/secret/限定egressを備えた専用Composeは未作成。既存 `docker-compose.timefree.yml` はPython-only、`network_mode: none` でcapture用ではない。
 
 ## Next actions
-1. 完了: 明示allowlistの30ファイルをstage。excluded 3ファイルはunstaged保持。
-2. `Add isolated RadioFlix timefree recording runtime` として1 commitを作成する。
-3. `git push origin main` を実行し、HEADとorigin/mainの一致を確認する。
-4. latest.mdをcommit/push済み最終状態へ更新し、最終history snapshotを保存する（1 commit制約のためログ最終checkpointはcommit後の作業差分として残す）。
+1. 指定ファイルのみで `Add fail-closed RadioFlix timefree bootstrap` の1 commitを作成する。
+2. `origin/main` へpushし、実remote refとHEADの一致を確認する。
+3. 以後はrfriends3側の副作用なし・argv型capture APIを前提とするSafe Capture Adapterの隔離開発へ進む。実録音/本番deployは別途受入まで行わない。
 
 ## Blockers / Issues
-- 実radiko audio bootstrap未接続。`capture_ready=false`。今回のコードは実録音を起動できない。本番隔離worker反映も未実施。
-- 実形式WAV以外は未対応。NAS本番パスのowner/permission/fsync受入は未確認。
-- native worker間で共通lockなし。照合直後の外部同時native開始を完全排除する仕組みではない。
-- 今回native予約dat/shの指紋と本番4コンテナは不変。at spoolは前後の集約指紋が変化した。隔離試験はnetwork noneで本番mount/at queueへ接続せず、当作業からat操作していない。変化元はこの観測だけでは特定できない。
-- lintに既存warning 5件。実録音・本番DB E2E・Android実機確認は未実施。
+- 現行sourceに安全に直接再利用できる境界なし。rfriends3変更なしでproduction capture bridgeを実装するのは危険。
+- fingerprint一致だけでは副作用・shell command安全性を証明できない。
+- `timefree_kwrec_ex()` を直接呼ぶとRadioFlix専用queueへ差し替えてもqueueを削除/再生成し、cancel marker時にprocess全体を終了する。
+- `rfriends_downloader()` は組み立て済みshell stringを外部実行へ渡し、通常録音領域・移動・hookの既存設計に依存する。secret/auth/playlistの実データを読み取らず、安全なargv変換は今回未検証。
+- 実radiko認証/HTTP/HLS/ffmpeg、実録音、production deployは未実施。実タイムフリー1本試験へ進めない。
 
 ## Files changed
-commit候補はbackend API/service/store/timefree worker一式、backend既存app/schedule接続とtest dependency、backend tests、timefree test/deploy-candidate Compose、番組表UI/API rewrite/UI test、Phase 4 validation/runtime docsと既存history、latest.md。明示的なstaged allowlistで確定する。
-除外: `.codex/config.toml`、`frontend/Dockerfile.dev-backup`、`frontend/Dockerfile.production`、secret/.env/credential、`/tmp`。値・内容を取得していない。
+- `backend/radioflix/timefree/bootstrap.py` / `control.py`: fingerprint/metadata/path/gate preflightをproduction appに配線。production bridgeはfail-closed。
+- `backend/radioflix/timefree/bootstrap-source-manifest.json`: 6 direct candidate sourcesのallowlist/fingerprint。activation false。
+- `backend/tests/test_timefree_bootstrap.py`: manifest/path/gate回帰6件。
+- `docs/radioflix-timefree-runtime.md`: 現行source dependency graphとA/B/C分類、安全境界なしの判断。
+- `docs/radioflix-timefree-phase4-validation.md`: read-only auditと今回の回帰検証。
+- `docs/dev-log/latest.md` と今回のhistory snapshot。
+- 既存未追跡 `.codex/`、`frontend/Dockerfile.dev-backup`、`frontend/Dockerfile.production`、既存historyは変更/削除していない。
 
 ## Git state
-main / precommit HEAD d46babe85db84b4ee08ff1ccf3d14fe97ed4fa0f。origin/mainもprecommit時点で同一。30件を32件を明示stage済み。cached diff check/secret scan PASS、staged一覧にcredential/除外fileなし。commit/pushは未実施。除外ファイルは未stageで保持。
+branch `main`。開始HEAD `2ad058817b520e85f8f830ac160bf617afbf9f69`。今回の指定checkpoint commit/push前。関係ファイルのみ明示stageする。既存 `.codex/`、Dockerfile backup、過去history等は除外して保持。`git reset` / `git restore` 不使用。
 
 ## Tests
-今回実行済み:
-- backend/PHP/worker全188件成功、skip 0（network none、read-only、UID1000、cap-drop ALL。code/source/依存ro、専用test volumeのみ書込）。
-- Python `py_compile`: 43 files PASS。PHP `-l` worker.php/fixture-bindings.php PASS。
-- schedule UI 148 checks PASS（360/390/412/1280px）。reservation UI 24 scenarios PASS（360/1280px）。playback/navigation 21 checks PASS（360px）。全て隔離mock。
-- `npx tsc --noEmit` PASS。`npm run lint` error 0、既存warning 5。`npm run build` PASS。
-- test volumeでatomic publish/no-replace、collision、SIGKILL中断/復旧、unknownと再録音防止などruntime testsを実行。
-- Compose config `--quiet` PASS。PHP source-manifest hash PASS。
-- `git diff --check` PASS。secret pattern scan 29 changed/new files、findings 0（内容を出さず）。
-- 初回sandbox制限でNext local serverのport bindが失敗したため、同じ隔離mock UIテストとbuildを許可付きで再実行し成功。Host PHPは未導入だがPHP test/syntaxは専用既存imageで実行。
-- 本番公開先E2E、実radiko認証/HLS/録音、実機Androidは未実施。禁止/未接続のため。
+- 2026-10-19 backend/PHP/worker: 194 tests PASS（Phase 1〜3回帰含む）。network none、read-only rootfs、UID1000、cap-drop ALL、両gate 0、専用test volumeのみwrite。
+- bootstrap-specific: 6 tests PASS（allowlist/hash、missing/mismatch、traversal、symlink、gate OFF）。network none、read-only、両gate 0。
+- Python syntax: backend 45 files compile PASS。PHP `-l`: worker/fixtureとmanifest対象6 source PASS。初回確認では不存在のtest-driver.phpを指定して失敗し、実在対象に絞ってPASS。
+- UI mocks: schedule 148 checksを3連続run PASS（中断前runの完了ログ＋今回2回）、reservation 24 scenarios PASS、playback/navigation 21 checks PASS。すべてmock/localhostのみ。
+- `npx tsc --noEmit`: PASS。
+- `npm run lint`: error 0、既存warning 5。
+- `npm run build`: PASS。初回sandbox時はTurbopack subprocess port bind不可で失敗、制約付き再実行PASS。
+- source manifest: 稼働中rfriends3からread-only取得した6 fingerprintsと一致。
+- `PYTHONPYCACHEPREFIX=/tmp/... python3 -m compileall -q backend`: PASS。PHP syntaxはworker/fixtureとmanifest 6 source PASS。
+- `git diff --check`: PASS。
+- secret pattern scan: PASS、変更/追加16ファイルで0 findings（内容は出力せず）。
+- Compose build/configとproduction service testは未実施。ComposeにPHP/source/secret/egressがなく、実bootstrapが未接続のため。
 
 ## Runtime / Safety
-- `RFRIENDS_ENABLE_WRITES=0`（backend実効環境）。timefree gateはproduction backendに未設定＝既定OFF。test containerでは両gateを明示0。
-- RadioFlix SQLite読み取り集計: active reservation 0、active weekly 0、timefree table absent（active/running job 0）。recording_jobsもactiveなし。列挙は状態別件数だけで秘密/番組情報は出力していない。
-- 本番4コンテナのID/state/StartedAt/RestartCount/gate前後比較一致。全てrunning、RestartCount 0。rfriends3 running、healthcheck未定義。本番worker containerなし。
-- native reservation dat/sh files: 18件、集約指紋は前後一致。at spoolは各11/2件、集約指紋が前後で変化。作業はnative dat/sh/atを書き込む処理を含まない。変化元は未確認であり、不変と断定しない。
-- 本番timefree録音なし: YES。実録音なし、両gateを1にしていない。backend/PHP/worker試験はmock/合成音声、network none。
-- 本番worker deploy/restart/recreateなし。本番録音volumeへのwriteなし。今回専用test volumeを削除済み。専用review imageは過去build状態で残る。
-- 本番隔離worker反映試験: まだ実施せず。両gate OFFの候補はあるが、NAS mount permission/fsync受入・個別反映許可が必要。実タイムフリー1本試験: NO、bootstrap未接続のため進行不可。
+- 稼働中backendの `RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES` 未設定を確認。隔離testsでは両gate明示0。
+- 実radiko認証/HTTP/HLS/音声通信: 0。backend/PHP/workerはnetwork none、UIはmock/localhostで外部originをabort。
+- 実タイムフリー録音: 0。生成音声はsynthetic WAVのみ。
+- native dat/sh/at: 試験containerへmountせず、全作業で読み書きなし。rfriends3 source調査はcontainer read-only exec/copyのみ。今回の作業由来変更なし。
+- Docker read-only一覧でtimefree workerなし。worker deploy/restart/recreate、通常録音領域write、secret readなし。commit/pushはこのcheckpointで実行予定。
+- production bootstrap deploy試験: NO。実タイムフリー1本試験: NO。
 
 ## Important decisions
-- commit対象は明示allowlist。未追跡一括addを使わない。.env/secrets/token/cookie/Authorization/.codex/指定Dockerfile/tmpは除外。
-- commitは指定メッセージで1個。commit後latest/history最終更新はその1 commitに含めず、working treeに残す。push後HEAD == origin/mainを確認する。
-- 二重gate、CaptureUnavailable、network-none testで実録音経路が閉じている。今回の検証PASSを実録音・本番deploy許可として扱わない。
+- `timefree_kwrec_ex()` はqueue/process副作用があり直接呼び出さない。`rfriends_downloader()` もshell/config/output hookが結合しており丸ごと再利用不可。
+- 現行rfriends3 sourceだけでは安全な直接再利用境界なし。独自のradiko認証/HLS再実装はせず、rfriends側の専用API追加まで停止する。
+- source hash allowlistは必要条件であり、実行承認ではない。manifest更新だけでproduction bridgeを有効化しない。
+- fixture modeとproduction modeは分離。fixtureは既存fake auth/HLS/downloader + synthetic WAVだけ。production transportはProductionBootstrap/ready falseを維持。
+- 双方のwrite gateを変更せず、どちらかがOFFならproduction captureを起動しない。
 
 ## Recovery instructions
-次はstaged filename/diff/secret scanを確認し、明示許可された1 commitとpushを完了する。ログとコードを戻す目的のreset/restoreは使わない。push後はHEADとorigin/mainを比較し、latest.mdとhistoryへ結果を記録する。続く作業は実radiko bootstrapの隔離開発だけで、実録音は別途許可と本番受入が必要。
+指定commit/push完了後、次回は隔離Safe Capture Adapter開発から再開する。`ProductionBootstrap.ready=false` / `bridge_approved=false`、gateを変更せず、実radiko通信・録音・deployを行わない。
+
+## at spool調査（2026-10-14、read-only）
+- 10/12 before/after atjobs hash差は、17:25のrfriends3定時cronを挟んでおり、通常cronによるnative予約at job再生成が最有力。dat/sh aggregate hashと中身はbefore/after/currentで同一。
+- RadioFlix隔離試験はproduction queue/mount非接続。at spool差分はRadioFlix操作由来ではないと判断。前後のjob ID別一覧がなく旧ID単位の削除/追加/変更は未確定。放送時刻自然消化よりcron再生成と整合。
+- 過去の詳細atq情報は2026-10-14 read-only調査記録と既存history snapshotを参照。今回at/native queue操作なし。

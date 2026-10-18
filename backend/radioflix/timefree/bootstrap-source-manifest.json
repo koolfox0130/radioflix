@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "relative_path": "script/rf_timefree.php",
+      "purpose": "timefree queue and stream URL helpers; queue runner has destructive queue semantics",
+      "sha256": "7b7456b0e0a68e71ce5eb673b07cb449ef722b4d5ed6214ac4f97f15e473dc25",
+      "required": true,
+      "functions": ["timefree_kwrec_ex", "timefree_check", "get_timefree_stream_url", "get_timefree_stream_url_tf30"]
+    },
+    {
+      "relative_path": "script/rf_downloader.php",
+      "purpose": "existing rfriends recording/downloader pipeline; shell and normal-output hooks require a safe adapter",
+      "sha256": "140ab00476eeeff9610aed5389ac1d5e5be5e86c2d40a33c399f723a9e22f624",
+      "required": true,
+      "functions": ["rfriends_downloader"]
+    },
+    {
+      "relative_path": "script/rf_radiko.php",
+      "purpose": "Radiko authentication helpers",
+      "sha256": "ae6e2d5a65775b0937d7d27a028b75e7f9d8d2fd8a0a9dfb33e046fa6a1333e4",
+      "required": true,
+      "functions": ["rfriends_auth_radiko"]
+    },
+    {
+      "relative_path": "script/rf_gateway_def.php",
+      "purpose": "ffmpeg option construction used by the existing downloader",
+      "sha256": "bd93ad12708b3eaa31f43787608442a3dc8e9e41ccdcaa68a6291b07dcafbb99",
+      "required": true,
+      "functions": ["rfgw_ffmpeg_opt"]
+    },
+    {
+      "relative_path": "script/rf_common04.php",
+      "purpose": "reservation metadata parsing and filename helpers",
+      "sha256": "81396bba975b914d642ca073c02f2d44a7b8d871fa8ff2ff18a75f649f57e8de",
+      "required": true,
+      "functions": ["get_para", "get_fnam", "fnam_edit"]
+    },
+    {
+      "relative_path": "script/rf_common.php",
+      "purpose": "file movement helper used by the downloader",
+      "sha256": "af4671b06349e58aab32c49b20c7592d6eb7d36b2a413ad969a2febc85c0c64a",
+      "required": true,
+      "functions": ["rf_movefile"]
+    }
+  ],
+  "activation": {
+    "approved": false,
+    "reason": "upstream timefree queue mutates/deletes its input; downloader invokes shell-string ffmpeg and normal-recording output/post-processing hooks"
+  }
+}

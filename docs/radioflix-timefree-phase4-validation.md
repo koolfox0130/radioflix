@@ -81,3 +81,29 @@ npm run lint
 ## 検証結果
 
 最終結果・既知の未確認項目・安全状態は `docs/dev-log/latest.md` と対応するhistory snapshotに記録する。過去の成功を今回の結果として扱わない。
+
+## 2026-10-16 bootstrap調査と隔離回帰
+
+今回の作業開始時HEADはPhase 4 checkpoint `2ad058817b520e85f8f830ac160bf617afbf9f69`。稼働中rfriends3から `rf_timefree.php` / `rf_downloader.php` と直接依存候補4ファイルを読み取り専用で取得した。6 source hashesは `bootstrap-source-manifest.json` に記録し、fixture 2 sourceを含むfingerprint検証はPASS。
+
+source reviewで `timefree_kwrec_ex()` のqueue削除/再書込/`exit`、`rfriends_downloader()` のshell文字列ffmpeg、通常録音rootへの出力、retry/transfer hooksを確認した。安全なlibrary API・source全体の副作用契約が確定していないため、実capture bridgeと本番用Composeは未完成。`ProductionBootstrap` はready false固定で、両gate OFFではPHPを起動せずfailする。実radiko認証・HTTP/HLS・ffmpegは一切実行しない。
+
+検証実績:
+
+- backend/PHP/worker: 194 tests PASS（Phase 1〜3回帰含む）。network none、container rootfs read-only、UID 1000、cap-drop ALL、両gate 0、専用`/tmp` test volumeのみwrite。初回の隔離環境はtest volume owner/tmp exec設定不足で失敗したため、隔離条件を直して全件再実行した。
+- bootstrap unit: 6 tests PASS（allowlist fingerprint、missing/hash mismatch、manifest path traversal、symlink、gate OFF拒否）。
+- PHP `-l`: RadioFlix worker/fixtureとmanifest対象6 source PASS。
+- Python compile: bootstrap/test module PASS。
+- UI: schedule 148 checks、reservation 24 scenarios、playback/navigation 21 checks PASS。全API/音声はmock。
+- `npx tsc --noEmit` PASS。`npm run lint` error 0、warning 5（既存）。`npm run build` PASS。sandboxではTurbopack subprocessのport bind制限で失敗したため、許可付き再実行を行った。
+- bootstrap source manifest: 稼働中rfriends3から得た6 fingerprintと一致。git diff/secret scanの最終結果はlatestへ記録する。
+
+実録音・認証・radiko network: 0。production service deployなし。ComposeはPHP/source/secret/egressを備えないため、隔離worker反映試験・実タイムフリー1本試験へ進めない。
+
+## 2026-10-16 capture境界 read-only audit
+
+現行rfriends3 sourceの関数単位依存を追跡し、dependency graphとA/B/C分類を `docs/radioflix-timefree-runtime.md` に追記した。`timefree_kwrec_ex()` はqueue file変更・process終了を含み、`rfriends_downloader()` は認証/HLSのshell string経路、ffmpeg shell string、通常録音rootへのmoveと通常後処理を束ねる。現行auth/HLS下位helperも `rf_wget()` → `external_program()` → `system()` に接続しており、RadioFlix専用pathとargvだけに閉じた取得境界は存在しないと判断した。
+
+従ってproduction bridgeは実装せず、`ProductionBootstrap.ready=false` / `bridge_approved=false` を維持する。candidate source manifestはfingerprint allowlistであり、実行承認ではない。production用capture Composeも未完成のままで、今回起動・deployしていない。隔離fixtureはこれまでどおりfake auth/HLS/downloaderと合成音声のみであり、実radiko経路の互換性は主張しない。
+
+本判断は実コードのread-only確認に基づく。rfriends3・native rsv/dat/sh/at・通常録音領域への変更はなく、秘密値も読み取っていない。実radiko認証・HTTP/HLS・録音は0。今回の最終再検証結果は `docs/dev-log/latest.md` に記録する。
