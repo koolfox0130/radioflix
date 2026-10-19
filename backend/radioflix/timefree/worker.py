@@ -137,6 +137,30 @@ class TimefreeWorker:
                 self.store.event(db, row['job_id'], 'running', self.clock().isoformat())
             work = None
             publishing = False
+
+            def publish_capture(output, capture_workspace=None):
+                nonlocal publishing
+                output = Path(output)
+                if output.is_symlink() or not stat.S_ISREG(output.stat().st_mode):
+                    raise ValueError('invalid_output')
+                if capture_workspace is None:
+                    if work is None or (work / 'output').is_symlink() or output.resolve().parent != work.resolve() / 'output':
+                        raise ValueError('invalid_output')
+                else:
+                    capture_workspace = Path(capture_workspace)
+                    capture_root = (self.root / '.staging' / 'capture-work').resolve(strict=True)
+                    if (capture_workspace.is_symlink() or not capture_workspace.resolve(strict=True).is_relative_to(capture_root)
+                            or output.resolve().parent != capture_workspace.resolve(strict=True)):
+                        raise ValueError('invalid_output')
+                audio_info(output, expected)
+                if eligibility(row['broadcast'], self.clock()):
+                    raise ValueError('expired_before_publish')
+                if self.preflight:
+                    self.preflight(row)  # Native/file conflicts appearing during capture also block publication.
+                publishing = True
+                manifest = self.publisher.publish(row, output, expected)
+                self.completed(row, manifest)
+
             try:
                 job_id(row['job_id'])
                 problem = eligibility(row['broadcast'], self.clock())
@@ -147,22 +171,17 @@ class TimefreeWorker:
                     self.preflight(row)
                 elif self.transport.kind != 'fixture':
                     raise ValueError('preflight_required')
-                work = Path(tempfile.mkdtemp(prefix='work-', dir=self.root / '.staging'))
                 # Last gate check immediately before any real capture transport.
                 if self.transport.kind != 'fixture' and not live_gate():
                     raise ValueError('writes_disabled')
-                output = self.transport.run(row, work)
-                if output.is_symlink() or (work / 'output').is_symlink() or output.resolve().parent != work.resolve() / 'output':
-                    raise ValueError('invalid_output')
                 expected = (datetime.fromisoformat(row['end_at']) - datetime.fromisoformat(row['start_at'])).total_seconds()
-                audio_info(output, expected)
-                if eligibility(row['broadcast'], self.clock()):
-                    raise ValueError('expired_before_publish')
-                if self.preflight:
-                    self.preflight(row)  # Native/file conflicts appearing during capture also block publication.
-                publishing = True
-                manifest = self.publisher.publish(row, output, expected)
-                self.completed(row, manifest)
+                capture_job = getattr(self.transport, 'capture_job', None)
+                if callable(capture_job):
+                    with capture_job(row['job_id']) as captured:
+                        publish_capture(captured.audio_path, captured.workspace)
+                else:
+                    work = Path(tempfile.mkdtemp(prefix='work-', dir=self.root / '.staging'))
+                    publish_capture(self.transport.run(row, work))
             except Exception as error:
                 uncertain = publishing or isinstance(error, (subprocess.TimeoutExpired, FileExistsError))
                 self.failed(row, 'unknown' if uncertain else 'failed',

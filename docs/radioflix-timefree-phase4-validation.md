@@ -100,6 +100,16 @@ source reviewで `timefree_kwrec_ex()` のqueue削除/再書込/`exit`、`rfrien
 
 実録音・認証・radiko network: 0。production service deployなし。ComposeはPHP/source/secret/egressを備えないため、隔離worker反映試験・実タイムフリー1本試験へ進めない。
 
+## 2026-10-19 Safe Capture Adapter fixture
+
+`backend/radioflix/timefree/capture/` にjob_idから音声成果物までの共通orchestrator、typed stage contract、fixture ports、shell-free ffmpeg argv helper、production NotReady adapterを追加した。`worker.py` はcapture context結果を既存publisherへ渡し、jobから導出したworkspace内だけを受け入れる。production adapterはworkerへ未接続で、`ready=false` / `bridge_approved=false` を維持する。
+
+capture専用テストは31件PASS。正常worker→publisher、invalid job/path/shell payload、metadata/expiry/duplicate/native unknown、fake auth/playlist/media failure、timeout、ffmpeg argv allowlist、truncated/zero-byte/wrong-format、collision、cleanup、interruption後のreconcile、gate OFF、production NotReadyを含む。実Subprocessは呼ばず、ffmpeg argvテストは `subprocess.run` mockでlist・`shell=False`・固定optionを確認する。失敗初回はtest dummy executableを`/tmp`上で実行可能と判定できなかったもので、`/tmp`をnoexecにした隔離条件に対応して専用test volume上のdummyに移し、31件を最終再実行してPASSした。
+
+安全条件はnetwork none、read-only root、UID1000、cap-drop ALL、no-new-privileges、`/tmp` tmpfs noexec/nosuid、backend/deps read-only、空の専用test volumeだけwrite。native予約/dat/sh/at、通常録音root、Docker socketはいずれもmountしていない。fixtureではsocket/HTTPを開かず合成audioのみを生成する。host Python 3.11での初回起動はPython 3.12用pydantic_coreの不一致でimport前に停止したため、該当テスト結果には含めずPython 3.12隔離containerで実行した。
+
+runtime docにrfriends3 sourceからの仕様抽出、各stage contract、将来productionに必要なauth/HTTP/HLS/ffmpeg/secret/egress/timeout/retry/error mappingを追記した。これらはinterface/design記録で、実radiko通信機能の実装ではない。完全な回帰結果はlatestに記録する。
+
 ## 2026-10-16 capture境界 read-only audit
 
 現行rfriends3 sourceの関数単位依存を追跡し、dependency graphとA/B/C分類を `docs/radioflix-timefree-runtime.md` に追記した。`timefree_kwrec_ex()` はqueue file変更・process終了を含み、`rfriends_downloader()` は認証/HLSのshell string経路、ffmpeg shell string、通常録音rootへのmoveと通常後処理を束ねる。現行auth/HLS下位helperも `rf_wget()` → `external_program()` → `system()` に接続しており、RadioFlix専用pathとargvだけに閉じた取得境界は存在しないと判断した。

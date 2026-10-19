@@ -153,3 +153,43 @@ RadioFlix job metadata
 将来接続するには、rfriends側に副作用を持たないauth/playlist/HLSライブラリAPIとargv型の取得実行APIを追加し、そのAPIに必要なsourceだけを固定fingerprintで束ねる必要がある。これは今回禁止されたrfriends3変更に当たり、実施していない。現行 `docker-compose.timefree.yml` はPython-onlyかつ `network_mode: none` であり、本番capture serviceとして完成扱いにしない。PHP runtime/source/secret/限定egressを設計・起動する段階にも進まない。
 
 本番候補 `docker-compose.timefree.yml` はPython専用imageで、PHP runtime・rfriends source bundle・radiko credential fileを提供せず、`network_mode: none` でもあるため、実radiko接続を行うworker Composeとして未完成である。今回Compose変更やdeployは行っていない。次の設計では安全なCLI-free source boundaryと最小source bundleを確定してから、read-only source/secret mount・非root PHP runtime・timefree専用write root・radiko限定egressを別サービスにする。二重gateは維持する。
+
+## Safe Capture Adapter（fixture専用）
+
+2026-10-19、jobから音声検証までのRadioFlix側境界を追加した。`capture_job(job_id)` はjob IDだけを受け、storeから正式rowを再取得し、snapshotのBroadcast、episode SHA-256、station、timezone付きstart/end、state、期限、重複、必須preflightを再検証する。任意出力先やコマンド文字列を受け取らない。書込みは `managed_root/.staging/capture-work/<job_id>-<random>/` のみに導出し、一時workspaceはcontext終了時に削除する。workerは結果を既存のpublisherへ渡し、公開前にもWAV実データ・予定時間・native/duplicate preflightを確認する。
+
+上位処理の境界は次のとおり。各portはfixtureで置換可能だが、Adapter本体の順序・metadata検証・path検査・音声検証は共通である。
+
+```text
+DB row by job_id → metadata/eligibility/duplicate/preflight
+  → Authenticator → PlaylistProvider → MediaFetcher
+  → AudioTranscoder → audio_info(WAV + byte count + duration)
+  → existing worker Publisher
+```
+
+現行rfriends3 sourceから抽出した仕様は、認証mode（通常、mode2/3、premium）の選択が設定に依存すること、stationと開始/終了（時間境界・余白を含む）からタイムフリーplaylistを解決すること、HLS playlist/segment取得時に認証情報・地域情報を使うこと、tf30経路では概ね300秒単位で分割してplaylistを連結すること、playlist終端/時刻情報を検証すること、ffmpegで音声へ変換し出力を確認すること。認証資格情報・area/tokenの値はログやmanifestへ出さない。現行helperはwget/`external_program()`のshell文字列経路へ戻るため、この仕様をHTTP/HLS実装として移植してはいない。
+
+現行sourceを仕様として読む際の入力・順序・取得値・停止条件は次のように整理した。厳密なHTTP status/retry matrixや、全auth modeごとのwire contractは既存のshell/global依存から安全に確定できないため、production contractとしては未確定扱いにする。
+
+| 順序 | 必要な入力 | 取得/生成する値 | 開始を止める条件 |
+|---|---|---|---|
+| 1. job確認 | job_idからDB取得したepisode id、station、timezone付きstart/end、期限、実行状態 | canonical episode fingerprint、予定秒数 | job/state不正、日時不整合、期限切れ、duplicate/native preflight不明 |
+| 2. 認証 | station/timefree利用条件、既存設定が選ぶ認証mode、secret source | 認証contextと地域/area情報 | 設定・secret欠落、認証失敗、想定外応答。credential値は返却値のrepr/logへ含めない |
+| 3. playlist | station、開始/終了時刻、既存仕様の時間余白、認証context | HTTPS HLS playlist参照、必要な時刻/segment情報 | HTTP/parse失敗、空/不正playlist、時間範囲と合わない応答 |
+| 4. media | 検証済みplaylist/segment参照、認証context | RadioFlix workspace内のmedia input | host/scheme不許可、playlist終端不正、segment欠落、timeout/byte上限超過 |
+| 5. audio | 固定ffmpeg実行ファイル、workspace内media input、予定秒数 | WAV成果物 | ffmpeg非zero/timeout、音声streamなし、zero/truncated/予定時間不一致 |
+| 6. publish | 検証済み成果物とDB job | 既存publisherのatomic公開manifest | 再照合不一致、衝突、成果物fingerprint不一致 |
+
+この表は既存処理の観察をRadioFlix側の安全契約に翻訳したもの。表にあるHLS host/size policyやretry上限をrfriends3が保証しているという主張ではなく、production adapterを作る際に新たに実装・検証する必須条件である。
+
+| 境界 | fixtureでの実装 | 将来productionで必要な契約 |
+|---|---|---|
+| auth | `FixtureAuthenticator` が固定fixture contextを返す | secret fileを読み、秘密値をrepr/log/argvに出さず、指定station/期間向け認証contextを返す。現在はNotReady |
+| playlist | `FixturePlaylistProvider` が `fixture://` URIを返す | HTTPSの許可hostのみ、station/start/endと認証contextからplaylistを取得し、redirect/URL/hostを検証する。HTTP clientは未実装 |
+| media | fixture bytesを書き込む | HLS URI/segment/byte/time limits、bounded retry、connect/read/overall timeout、許可host egressを実装する。現行wget helperは使わない |
+| ffmpeg | `SyntheticAudioTranscoder` でWAVを生成 | ffmpeg固定pathまたはpreflight確定path、argv list、`shell=False`、固定cwd、protocol allowlist、非同期停止可能なtimeoutを使う |
+| audio | `audio_info` でWAV、実byte数、durationを確認 | codec/container許可、期待時間許容差、最大byte数、truncation/zero-byte拒否を保つ |
+
+`FfmpegArgvTranscoder` は将来向けのshell-free境界だがproduction経路には未接続。固定 `/usr/bin/ffmpeg` または `/usr/local/bin/ffmpeg`、あるいは明示的にpreflightから渡された実体path以外を拒否し、argv配列のみで `subprocess.run(..., shell=False)` を呼ぶ。呼出元がexecutable/commandをmetadataから指定する入口はない。試験では `subprocess.run` をmockし、ダミー実行ファイルを実行していない。
+
+production adapterは `ProductionCaptureAdapter` のinterfaceだけで、`ready=false` / `bridge_approved=false`、認証・HTTP・HLS portなし、capture呼出しは常にNotReady。両gateがONでも本実装を起動しない。fixture modeはコンストラクタでのみ注入し、環境変数・APIからproduction/fixture portを切り替える機能はない。production化には、secret mount、allowlisted HTTPS egress、HTTP/HLS/segment総時間・サイズ制限、bounded retryと再試行可能性、認証/playlist/media/ffmpeg/audio/preflightのstructured error mapping、ffmpegのresource limit、egress監査が必要。現時点のworker serviceはnetwork noneであり、本adapter fixtureが通ってもproduction capture準備完了を意味しない。

@@ -1,85 +1,70 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-19 08:09:33 JST
+2026-10-19 12:36:41 JST
 
 ## Current task
-fail-closed RadioFlix timefree bootstrapとrfriends3 dependency investigationを独立checkpointとしてcommit/pushする。
+Safe Capture Adapter fixtureを独立checkpointとして最終レビュー・commit・pushする。
 
 ## Current phase
-Phase 4 fail-closed bootstrap checkpoint。Safe Capture Adapterは未実装。
+Phase 4 Safe Capture Adapter fixture checkpoint。
 
 ## Status
 ready_to_commit
 
 ## Completed
-- 開始時branch `main`、HEAD/origin/main `2ad058817b520e85f8f830ac160bf617afbf9f69` を確認。checkpointと一致。既存のlatest変更・未追跡ファイルは保持。
-- `/home/user/rfriends3/script/rf_timefree.php` と `rf_downloader.php` を稼働中rfriends3から読み取り専用で調査。2ファイルのhashはfixture manifestと一致。
-- 直接依存候補として `rf_radiko.php`、`rf_gateway_def.php`、`rf_common04.php`、`rf_common.php` も確認し、6 sourceのpath/purpose/function/hash/requiredをbootstrap source manifestに記録。
-- `timefree_kwrec_ex()` → `rfriends_downloader()`、認証/HLS → `rf_wget()` → `external_program()` → `system(command string)`、ffmpeg、temp、出力move、log/cleanup/post-processingまで関数単位で追跡し、A/B/C分類と結論をruntime docへ追記。
-- 安全なauth/HLS取得用のargv型・path注入型library APIは現行sourceに存在しないと判定。両timefree関数はproduction bridgeから直接使わず、bridgeを作らずfail-closedを維持。
-- `backend/radioflix/timefree/bootstrap.py` にallowlist/hash/path検証と二重gateのfail-closed境界を追加。bridgeは承認false/ready false固定で、PHPやrfriends関数を起動しない。
-- 2026-10-19にbackend/PHP/worker、bootstrap、frontend回帰・型・lint・buildを再実行。schedule UIは中断前のrunがexit 0で148 checks PASS、その後の連続2 runもPASS。
+- job_idから正式DB metadataを再取得し、metadata/期限/duplicate/preflightを確認する共通Capture Adapter、auth/playlist/media/transcoder interface、fake fixture port、audio validationを実装。
+- `TimefreeWorker`からAdapter contextを呼び、固定managed root配下のworkspace成果物を既存publisherへ渡す境界を追加。
+- ffmpeg将来helperをargv + `shell=False` + executable allowlistに限定。実HTTP/HLSおよびproduction portは未実装、`ready=false` / `bridge_approved=false`。
+- capture専用31 tests PASS、backend/PHP/worker全体225 tests PASS。Python compileall、PHP syntax 5 filesもPASS。
+- schedule UI 148、reservation UI 24、playback/navigation 21 checks PASS。TypeScript PASS、lint error 0 / warning 5、production build PASS。
+- backend containerからgate `RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES=<unset>`を確認。実radiko通信/実録音/worker deployなし。
 
 ## In progress
-- rfriends3に副作用を隔離した認証・HLS・取得APIがない。rfriends3側で専用library API/argv境界を設けない限りcapture bridgeに進めない。
-- production用PHP runtime/source bundle/secret/限定egressを備えた専用Composeは未作成。既存 `docker-compose.timefree.yml` はPython-only、`network_mode: none` でcapture用ではない。
+- 対象差分の明示stageとstaged review後に、指定messageで1 commitを作成してorigin/mainへpushする。
 
 ## Next actions
-1. 指定ファイルのみで `Add fail-closed RadioFlix timefree bootstrap` の1 commitを作成する。
-2. `origin/main` へpushし、実remote refとHEADの一致を確認する。
-3. 以後はrfriends3側の副作用なし・argv型capture APIを前提とするSafe Capture Adapterの隔離開発へ進む。実録音/本番deployは別途受入まで行わない。
+1. Safe Capture Adapter本体、tests、worker接続、runtime/validation docs、latestと関連historyだけを明示stageする。
+2. staged file list/diff、secret scan、`git diff --cached --check`を確認し、無関係untrackedが含まれないことを確認する。
+3. `Add fixture-safe RadioFlix capture adapter`でcommitし、`origin/main`へpushしてHEAD・tracking ref・実remote refを照合する。
+4. push後の最新状態をlatest/historyへ保存する。production source API開発・radiko接続・録音は開始しない。
 
 ## Blockers / Issues
-- 現行sourceに安全に直接再利用できる境界なし。rfriends3変更なしでproduction capture bridgeを実装するのは危険。
-- fingerprint一致だけでは副作用・shell command安全性を証明できない。
-- `timefree_kwrec_ex()` を直接呼ぶとRadioFlix専用queueへ差し替えてもqueueを削除/再生成し、cancel marker時にprocess全体を終了する。
-- `rfriends_downloader()` は組み立て済みshell stringを外部実行へ渡し、通常録音領域・移動・hookの既存設計に依存する。secret/auth/playlistの実データを読み取らず、安全なargv変換は今回未検証。
-- 実radiko認証/HTTP/HLS/ffmpeg、実録音、production deployは未実施。実タイムフリー1本試験へ進めない。
+- テストの初期再実行でtest-only volume上のffmpeg dummy directoryが既存だと失敗することを発見。`mkdir(exist_ok=True)`に直し、capture 31件および全225件を再実行してPASS。これはテスト再実行性の修正。
+- 現行rfriends3に安全なauth/HLS source APIがないためproduction captureはNotReady。この点は今回のcheckpoint対象外。
+- frontend mock testsはlocalhost serverを使うため単独実行。schedule 148、reservation 24、playback/navigation 21が終了コード0。
 
 ## Files changed
-- `backend/radioflix/timefree/bootstrap.py` / `control.py`: fingerprint/metadata/path/gate preflightをproduction appに配線。production bridgeはfail-closed。
-- `backend/radioflix/timefree/bootstrap-source-manifest.json`: 6 direct candidate sourcesのallowlist/fingerprint。activation false。
-- `backend/tests/test_timefree_bootstrap.py`: manifest/path/gate回帰6件。
-- `docs/radioflix-timefree-runtime.md`: 現行source dependency graphとA/B/C分類、安全境界なしの判断。
-- `docs/radioflix-timefree-phase4-validation.md`: read-only auditと今回の回帰検証。
-- `docs/dev-log/latest.md` と今回のhistory snapshot。
-- 既存未追跡 `.codex/`、`frontend/Dockerfile.dev-backup`、`frontend/Dockerfile.production`、既存historyは変更/削除していない。
+- `backend/radioflix/timefree/capture/`: Adapter、stage contracts、fixture ports、argv helper、production NotReady adapter。
+- `backend/radioflix/timefree/worker.py`: Adapter capture contextからpublisherへの安全な引渡し。
+- `backend/tests/test_timefree_capture.py`: 31 security/regression tests。
+- `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`: source仕様、安全境界、fixture検証記録。
+- `docs/dev-log/latest.md`、関連するSafe Capture Adapter history snapshots。
+- `.codex/`、frontend Dockerfile backups、bootstrap checkpoint history、その他の既存untrackedはstage対象外。
 
 ## Git state
-branch `main`。開始HEAD `2ad058817b520e85f8f830ac160bf617afbf9f69`。今回の指定checkpoint commit/push前。関係ファイルのみ明示stageする。既存 `.codex/`、Dockerfile backup、過去history等は除外して保持。`git reset` / `git restore` 不使用。
+branch `main`、HEAD `cd9fb4edbfb167cf1d6d23d6601689a1c7be35b7`。今回未commit、originへの更新なし。commit候補は上記allowlistのみ。無関係untrackedは保持する。`git reset` / `git restore`不使用。
 
 ## Tests
-- 2026-10-19 backend/PHP/worker: 194 tests PASS（Phase 1〜3回帰含む）。network none、read-only rootfs、UID1000、cap-drop ALL、両gate 0、専用test volumeのみwrite。
-- bootstrap-specific: 6 tests PASS（allowlist/hash、missing/mismatch、traversal、symlink、gate OFF）。network none、read-only、両gate 0。
-- Python syntax: backend 45 files compile PASS。PHP `-l`: worker/fixtureとmanifest対象6 source PASS。初回確認では不存在のtest-driver.phpを指定して失敗し、実在対象に絞ってPASS。
-- UI mocks: schedule 148 checksを3連続run PASS（中断前runの完了ログ＋今回2回）、reservation 24 scenarios PASS、playback/navigation 21 checks PASS。すべてmock/localhostのみ。
-- `npx tsc --noEmit`: PASS。
-- `npm run lint`: error 0、既存warning 5。
-- `npm run build`: PASS。初回sandbox時はTurbopack subprocess port bind不可で失敗、制約付き再実行PASS。
-- source manifest: 稼働中rfriends3からread-only取得した6 fingerprintsと一致。
-- `PYTHONPYCACHEPREFIX=/tmp/... python3 -m compileall -q backend`: PASS。PHP syntaxはworker/fixtureとmanifest 6 source PASS。
-- `git diff --check`: PASS。
-- secret pattern scan: PASS、変更/追加16ファイルで0 findings（内容は出力せず）。
-- Compose build/configとproduction service testは未実施。ComposeにPHP/source/secret/egressがなく、実bootstrapが未接続のため。
+- 最終実行: capture adapter 31 PASS、backend/PHP/worker 225 PASS（bootstrap/Phase 1〜3を含む）、Python compileall PASS、PHP syntax 5 files PASS。
+- frontend: schedule 148 checks PASS、reservation 24 scenarios PASS、playback/navigation 21 checks PASS、`npx tsc --noEmit` PASS、lint error 0 / warning 5、`npm run build` PASS。
+- `git diff --check` PASS。secret-pattern scanはstage前の変更対象で0 findings、stage後にstaged contentを再scanする。
+- backend/capture testsはnetwork none、read-only root、非root、cap-drop ALL、no-new-privileges。capture専用runはtmpfs noexecとtest-only write volume。native・通常録音領域・Docker socketはmountなし。UIはlocalhost mocks。
 
 ## Runtime / Safety
-- 稼働中backendの `RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES` 未設定を確認。隔離testsでは両gate明示0。
-- 実radiko認証/HTTP/HLS/音声通信: 0。backend/PHP/workerはnetwork none、UIはmock/localhostで外部originをabort。
-- 実タイムフリー録音: 0。生成音声はsynthetic WAVのみ。
-- native dat/sh/at: 試験containerへmountせず、全作業で読み書きなし。rfriends3 source調査はcontainer read-only exec/copyのみ。今回の作業由来変更なし。
-- Docker read-only一覧でtimefree workerなし。worker deploy/restart/recreate、通常録音領域write、secret readなし。commit/pushはこのcheckpointで実行予定。
-- production bootstrap deploy試験: NO。実タイムフリー1本試験: NO。
+- `ProductionBootstrap.ready=false`、`ProductionBootstrap.bridge_approved=false`、`ProductionCaptureAdapter.ready=false`、`ProductionCaptureAdapter.bridge_approved=false`。
+- `RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES`未設定。両者を変更せず、testでは両方0。
+- 実radiko認証/HTTP/HLS/録音: 0。production timefree worker containerなし。deploy/restart/recreateなし。
+- native rsv/dat/sh/at、通常録音領域は未接続・未変更。rfriends3本体に変更なし。
+- Safe Capture Adapter checkpointはcommit/push前。Safe Source API設計へは進めるが、production implementation/deploy/実録音は不可。
 
 ## Important decisions
-- `timefree_kwrec_ex()` はqueue/process副作用があり直接呼び出さない。`rfriends_downloader()` もshell/config/output hookが結合しており丸ごと再利用不可。
-- 現行rfriends3 sourceだけでは安全な直接再利用境界なし。独自のradiko認証/HLS再実装はせず、rfriends側の専用API追加まで停止する。
-- source hash allowlistは必要条件であり、実行承認ではない。manifest更新だけでproduction bridgeを有効化しない。
-- fixture modeとproduction modeは分離。fixtureは既存fake auth/HLS/downloader + synthetic WAVだけ。production transportはProductionBootstrap/ready falseを維持。
-- 双方のwrite gateを変更せず、どちらかがOFFならproduction captureを起動しない。
+- fixture Adapterをproduction workerに接続しない。production adapterはNotReady、二重gate OFF。
+- `timefree_kwrec_ex()` / `rfriends_downloader()`とshell command経路を再利用しない。
+- commit対象は今回のfixture境界とその検証・docs/logのみ。未追跡ファイルを一括stageしない。
 
 ## Recovery instructions
-指定commit/push完了後、次回は隔離Safe Capture Adapter開発から再開する。`ProductionBootstrap.ready=false` / `bridge_approved=false`、gateを変更せず、実radiko通信・録音・deployを行わない。
+commit前に`git status --short`とstaged diffを確認する。push後も`ready=false` / `bridge_approved=false`、両gate OFF、実radiko通信0・録音0を維持し、次はSafe Source APIの設計から始める。
 
 ## at spool調査（2026-10-14、read-only）
 - 10/12 before/after atjobs hash差は、17:25のrfriends3定時cronを挟んでおり、通常cronによるnative予約at job再生成が最有力。dat/sh aggregate hashと中身はbefore/after/currentで同一。
