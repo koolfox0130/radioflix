@@ -64,14 +64,19 @@ The running container was inspected without invoking PHP helpers, wget, network 
 ### Conditional
 
 - premium_check() returns an account/product-dependent branch from product status and the runtime $premium value. premium_mode=1 in the INI is not the $premium branch selector. The effective premium entitlement/state was not inspected because that would require account/session state. The premium helper can use cookie/session and different auth behavior.
-- The standard primary playlist path is confirmed from the helper. Whether the job takes the tf30 path and which returned stream URL/base is selected depends on runtime flags and area/account state; those were not resolved from a non-secret selector-only inspection.
-- Wget options are assembled from wget_opt / wget_opt_ext, User-Agent and optional proxy globals. The active values were not emitted or copied because they may contain proxy credentials. Their effective timeout/retry/redirect flags therefore remain unverified.
+- The downloader initializes tf30=0, then sets it to 1 only when rf_tf30_check() is true and rf_diff_timefree(fromtime) is below -7. rf_tf30_check() requires runtime premium to be 1 or 2 and premium_timefree30=1. These are loaded from separate premium state; their effective values were not inspected. If that branch is false, the normal playlist helper is used; if true, the tf30 helper is used. The final playlist URL returned by stream metadata depends on area/timefree XML attributes.
 
 ### Unknown and production blockers
 
-- Effective premium branch and per-job standard-vs-tf30 selection.
-- Effective wget retry/timeout/redirect flags, proxy configuration, and the complete set of final playlist hosts returned by the stream metadata endpoint.
+- Whether this runtime's premium state activates tf30; the selection condition is confirmed, but the premium config values were not read.
+- Retry/timeout behavior for the direct standard/tf30 playlist and PHP HLS requests. Auth helper flags are known below, but no explicit max-redirect/host-revalidation policy is configured.
+- The complete set of final playlist hosts returned by the stream metadata endpoint and response status/body limits.
 - Status/body schemas beyond the current parser checks, maximum response sizes, and safe redirect behavior. Wget's client defaults and options determine redirects; rf_file_get_contents() delegates to PHP stream-wrapper defaults. Neither path revalidates redirect hosts.
 - Existing auth wget options include --no-check-certificate; the legacy code cannot be copied as a safe TLS policy. No request was made to validate a replacement policy.
 
 These unresolved account/config-dependent details and the legacy TLS/redirect behavior block a production transport design from being safely approved from the available read-only evidence. Block 3 (ProductionHttpTransport) was not started. Production remains NotReady/fail-closed.
+
+
+### Redacted effective wget option audit (2026-10-23)
+
+The active option strings were not printed. A read-only parser emitted only option names and numeric values; the proxy value was never displayed. For auth1, wget_opt_ext is -q, -t 10, -T 5, --connect-timeout=5, --waitretry=5. For auth2, wget_opt is -q, -t 5. These apply only to the mode-0 auth helper calls. The configured proxy is empty; User-Agent is configured. The direct standard playlist m3u8header and tf30 wget command do not use these option strings, so they have no equivalent configured timeout/retry bounds; PHP HLS stream reads also have no request-local timeout. No explicit maximum redirect count or destination-host revalidation was found. Values are source/config observations, not claims about HTTP status semantics.

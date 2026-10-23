@@ -1,7 +1,7 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-23 22:25:13 JST
+2026-10-23 22:27:48 JST
 
 ## Current task
 BLOCK 2: rfriends3 production wire仕様のread-only auditを完了。Production HTTPは安全性阻害の未確定点が残るため停止。
@@ -15,18 +15,18 @@ ready_to_commit
 ## Completed
 - Safe Source API fixtureをreview・隔離検証し、commit a7615f0f0f62d020d0256565f8caff5394c802ba (Add fixture-safe RadioFlix source API)をorigin/mainへpush。HEAD・tracking ref・実remote refの一致を確認した。
 - ProductionHttpTransportはNotReadyでsocket/DNS/HTTP clientへ到達しない。
-- Block 2のread-only調査でactive radiko_auth_mode=0、source/config hls_type=0、通常auth1→auth2の順序、通常timefree playlistのPOST body flash=1、tf30 300秒slice/queryの一部を確定。
-- 不確定なaccount-dependent premium/tf30選択、effective wget flags・redirect・timeout/retry、final HLS hosts、status/body contract、TLS policyが安全なProduction HTTPを阻害するためBlock 3を開始せず停止する。
+- Block 2でactive radiko_auth_mode=0、hls_type=0、normal auth1→auth2、standard playlist POST body flash=1、tf30 query fieldsを確認。Downloaderのtf30選択はpremium state plus episode-age condition。auth1/auth2のredacted retry/timeout option値も特定し、docsへ追記。
+- Effective premium stateとfinal HLS hosts、playlist/tf30/HLS request bounds、status/body contract、redirect policy、TLS policyが未確定で、Block 3は未開始。
 
 ## In progress
 - wire auditの確定/条件付き/未確定とProduction HTTPを止めた理由をruntime/source-api/validation docs、latest/historyへ記録した。docs-only checkpointをreview・commit/pushする。
 
 ## Next actions
-1. docs-only Block 2 checkpointを保存する。
+1. docs-only wire audit follow-up checkpointを保存する。
 2. ProductionHttpTransportはNotReadyのまま維持する。未確定wire事項の安全な解決が得られるまでBlock 3へ進まない。
 
 ## Blockers / Issues
-- effective premium/account branchとjob単位のtf30選択、wgetの実効timeout/retry/redirect/proxy設定、応答status/body contract、stream metadataが返す全hostが未確定。
+- effective premium stateは未確認（tf30の条件自体は確定）。auth timeout/retryはredactedに確認したがplaylist/tf30/HLS requestには明示timeout/retry上限がなく、response status/body contract、redirect safety、final stream host setが未確定。
 - 既存auth wgetはTLS検証を無効にし、PHP stream wrapperもpeer/name verificationなしで、redirect先host再検証がない。安全なProduction HTTPへそのまま移植できない。
 
 ## Files changed
