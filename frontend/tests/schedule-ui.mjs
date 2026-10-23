@@ -186,12 +186,37 @@ try {
     failed=true;await page.getByRole("button",{name:"再読み込み"}).click();await page.getByRole("alert").filter({hasText:"この日の番組表を取得できませんでした"}).waitFor();assert.equal(await page.locator("summary").count(),0);checks++;
     failed=false;await page.getByRole("button",{name:"ラジオ日本",exact:true}).click();await page.locator("summary").waitFor();checks++;
     const navigationPage=await context.newPage();let documentRequests=0;
+    const navigationDiagnostics = { width, console: [], pageErrors: [], failedRequests: [], urls: [], navigationRequests: [], navigationResponses: [], routeRequests: [], routeResponses: [], clicks: [] };
+    await navigationPage.addInitScript(() => window.addEventListener("click", event => {
+      const target = event.target instanceof Element ? event.target.closest("a") : null;
+      if (target) setTimeout(() => (window.__scheduleNavigationClicks ||= []).push({ href: target.href, prevented: event.defaultPrevented, trusted: event.isTrusted }), 0);
+    }, true));
+    navigationPage.on("console", message => { if (message.type() === "error") navigationDiagnostics.console.push(message.text()); });
+    navigationPage.on("pageerror", error => navigationDiagnostics.pageErrors.push(error.message));
+    navigationPage.on("requestfailed", request => navigationDiagnostics.failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText || "failed"}`));
+    navigationPage.on("request", request => { if (request.isNavigationRequest()) navigationDiagnostics.navigationRequests.push(`${request.method()} ${request.url()}`); });
+    navigationPage.on("response", response => { if (response.request().isNavigationRequest()) navigationDiagnostics.navigationResponses.push(`${response.status()} ${response.url()}`); });
+    navigationPage.on("request", request => { if (request.url().includes("reservations") || request.url().includes("_rsc")) navigationDiagnostics.routeRequests.push(`${request.method()} ${request.url()}`); });
+    navigationPage.on("response", response => { if (response.url().includes("reservations") || response.url().includes("_rsc")) navigationDiagnostics.routeResponses.push(`${response.status()} ${response.url()}`); });
+    navigationPage.on("framenavigated", frame => { if (frame === navigationPage.mainFrame()) navigationDiagnostics.urls.push(frame.url()); });
     navigationPage.on("request", request => { if (request.isNavigationRequest()) documentRequests++; });
     await navigationPage.goto(base);await navigationPage.getByText("テスト出演者",{exact:true}).waitFor();
     await navigationPage.getByRole("button",{name:"TBSラジオ",exact:true}).click();await navigationPage.waitForURL(url=>url.searchParams.get("station")==="TBS");
     await navigationPage.getByRole("button",{name:labels[7 + 1],exact:true}).click();await navigationPage.waitForURL(url=>url.searchParams.get("date")===offset(1));
     await navigationPage.getByRole("navigation",{name:"メインナビゲーション"}).getByRole("link",{name:"予約一覧"}).click();
-    await navigationPage.waitForURL(url=>url.pathname==="/reservations");await navigationPage.getByRole("heading",{name:"統合確認用予約一覧"}).waitFor();
+    try {
+      // Next dev compiles the intercepted route only when it is first visited.
+      // Keep the client-side URL assertion, but allow cold route compilation on
+      // slower CI/NAS workspaces to finish before treating it as a navigation failure.
+      await navigationPage.waitForURL(url=>url.pathname==="/reservations", { timeout: 120000 });
+      await navigationPage.getByRole("heading",{name:"統合確認用予約一覧"}).waitFor();
+    } catch (error) {
+      const evidence = { url: navigationPage.url(), body: await navigationPage.locator("body").innerText().catch(() => "unavailable"),
+        links: await navigationPage.getByRole("navigation",{name:"メインナビゲーション"}).locator("a").evaluateAll(items => items.map(item => ({ href: item.getAttribute("href"), text: item.innerText }))).catch(() => []),
+        documentRequests, ...navigationDiagnostics, clicks: await navigationPage.evaluate(() => window.__scheduleNavigationClicks), serverOutput: output.slice(-1800) };
+      console.error("Schedule navigation diagnostic:", JSON.stringify(evidence));
+      throw error;
+    }
     assert.equal(documentRequests, 1, "Navigation soft route must not request a new document");
     await navigationPage.getByRole("navigation",{name:"メインナビゲーション"}).getByRole("link",{name:"番組表"}).click();
     await navigationPage.waitForURL(url=>url.pathname==="/schedule"&&url.searchParams.get("date")===offset(1)&&url.searchParams.get("station")==="TBS");

@@ -19,6 +19,11 @@ from radioflix.timefree.capture.errors import CaptureFailure, CaptureNotReady
 from radioflix.timefree.capture.fixture import (FixtureAuthenticator, FixtureMediaFetcher,
                                                 FixturePlaylistProvider, SyntheticAudioTranscoder)
 from radioflix.timefree.capture.production import ProductionCaptureAdapter
+from radioflix.timefree.capture.source.auth import RadikoAuthenticationSource
+from radioflix.timefree.capture.source.media import HlsMediaSource
+from radioflix.timefree.capture.source.models import HttpResponse, Secret
+from radioflix.timefree.capture.source.playlist import TimefreePlaylistSource
+from radioflix.timefree.capture.source.transport import FakeHttpTransport
 from radioflix.timefree.service import deadline
 from radioflix.timefree.store import TimefreeStore
 from radioflix.timefree.worker import TimefreeWorker, completed_assets
@@ -81,6 +86,29 @@ class CaptureAdapterTests(unittest.TestCase):
         self.assertEqual(len(completed_assets(self.fixture.store, self.fixture.output, include_fixture=True)), 1)
         self.assertEqual(self.preflight_calls, [row['job_id']])
         self.assertTrue(self.auth.calls and self.playlist.calls and self.media.calls and self.transcoder.calls)
+        self.assertEqual(list(adapter.work_root.iterdir()), [])
+
+    def test_fake_source_api_runs_through_worker_and_publisher(self):
+        row = self.queued()
+        transport = FakeHttpTransport([
+            HttpResponse(200, body=b'{"auth_token":"SOURCE_FIXTURE_ONLY","area_id":"fixture"}'),
+            HttpResponse(200, body=b'{"playlist_url":"https://cdn.radiko.jp/fixture/index.m3u8"}'),
+            HttpResponse(200, body=b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmedia.m3u8\n'),
+            HttpResponse(200, body=b'#EXTM3U\n#EXTINF:1,fixture\nsegment.ts\n#EXT-X-ENDLIST\n'),
+            HttpResponse(200, body=b'synthetic-media-segment'),
+        ])
+        auth = RadikoAuthenticationSource(transport, credential=Secret('SOURCE_FIXTURE_CREDENTIAL'))
+        playlist = TimefreePlaylistSource(transport)
+        adapter = self.make_adapter(
+            authenticator=auth,
+            playlist_provider=playlist,
+            media_fetcher=HlsMediaSource(transport, playlist, work_root=self.fixture.output / '.staging' / 'capture-work'),
+        )
+        worker = TimefreeWorker(self.fixture.store, self.fixture.output, adapter,
+                                clock=lambda: self.fixture.now)
+        self.assertEqual(worker.run_once(row['job_id']), row['job_id'])
+        self.assertEqual(self.fixture.store.get(row['job_id'])['state'], 'completed')
+        self.assertEqual(len(transport.requests), 5)
         self.assertEqual(list(adapter.work_root.iterdir()), [])
 
     def test_capture_job_accepts_only_job_id_input(self):

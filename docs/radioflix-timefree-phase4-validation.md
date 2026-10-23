@@ -110,6 +110,14 @@ capture専用テストは31件PASS。正常worker→publisher、invalid job/path
 
 runtime docにrfriends3 sourceからの仕様抽出、各stage contract、将来productionに必要なauth/HTTP/HLS/ffmpeg/secret/egress/timeout/retry/error mappingを追記した。これらはinterface/design記録で、実radiko通信機能の実装ではない。完全な回帰結果はlatestに記録する。
 
+## 2026-10-20 Safe Source API fixture
+
+稼働中rfriends3から対象PHP source 9件をread-only取得し、container内SHA-256を照合した。すべて保存済み監査fingerprintと一致。2026-10-21はactive configの`radiko_auth_mode=0`だけを値出力し、source-defined auth1/auth2とplaylist endpoint、mode別処理を追加確認した。token/cookie/password等は読まず、HTTP requestも行っていない。station・開始終了時刻の`YmdHis` rectime、timefree margin、tf30 300秒区間、`wget -i`でのm3u8取得、`#EXT-X-ENDLIST` / `#EXT-X-PROGRAM-DATE-TIME`処理も確認した。effective `hls_type`/premium branch、全status/retry/redirect/timeoutの実効値は未確定。詳細は[`radioflix-timefree-source-api.md`](radioflix-timefree-source-api.md)。
+
+`capture/source/`にtyped HTTP request/response/timeout/retry、socketを使わない`FakeHttpTransport`、常時NotReadyの`ProductionHttpTransport`、authentication/playlist/HLS media sourceとHLS parserを実装。fixtureはsynthetic token/audio bytesとメモリ内responseのみ。URL exact-host/scheme/userinfo/IP/path policy、header injection、redirect拒否、response上限、retry/error mapping、secret repr redaction、workspace-only no-overwrite file creationをtestで確認する。production endpoint/wire contractは未実装。
+
+今回のテスト結果・安全状態は`docs/dev-log/latest.md`を参照。稼働rfriends3、native予約/dat/sh/at、通常録音rootは変更していない。production HTTPはNotReady、ready/bridge false、両gate OFF、実radiko通信0、実録音0を維持する。
+
 ## 2026-10-16 capture境界 read-only audit
 
 現行rfriends3 sourceの関数単位依存を追跡し、dependency graphとA/B/C分類を `docs/radioflix-timefree-runtime.md` に追記した。`timefree_kwrec_ex()` はqueue file変更・process終了を含み、`rfriends_downloader()` は認証/HLSのshell string経路、ffmpeg shell string、通常録音rootへのmoveと通常後処理を束ねる。現行auth/HLS下位helperも `rf_wget()` → `external_program()` → `system()` に接続しており、RadioFlix専用pathとargvだけに閉じた取得境界は存在しないと判断した。

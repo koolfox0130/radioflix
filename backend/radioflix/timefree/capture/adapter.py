@@ -176,7 +176,10 @@ class CaptureAdapter:
             if not getattr(playlist, 'url', None):
                 raise CaptureFailure('playlist_invalid')
             parts = urlsplit(playlist.url)
-            if (self.kind == 'fixture' and parts.scheme != 'fixture') or (
+            offline_source = all(getattr(port, 'offline_fixture', False) for port in (
+                self.authenticator, self.playlist_provider, self.media_fetcher))
+            fixture_https = self.kind == 'fixture' and offline_source and parts.scheme == 'https'
+            if (self.kind == 'fixture' and parts.scheme != 'fixture' and not fixture_https) or (
                     self.kind == 'live' and parts.scheme != 'https'):
                 raise CaptureFailure('playlist_invalid')
             media_path = self._stage('media_failed', lambda: self.media_fetcher.download(

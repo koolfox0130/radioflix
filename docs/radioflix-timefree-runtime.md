@@ -193,3 +193,7 @@ DB row by job_id → metadata/eligibility/duplicate/preflight
 `FfmpegArgvTranscoder` は将来向けのshell-free境界だがproduction経路には未接続。固定 `/usr/bin/ffmpeg` または `/usr/local/bin/ffmpeg`、あるいは明示的にpreflightから渡された実体path以外を拒否し、argv配列のみで `subprocess.run(..., shell=False)` を呼ぶ。呼出元がexecutable/commandをmetadataから指定する入口はない。試験では `subprocess.run` をmockし、ダミー実行ファイルを実行していない。
 
 production adapterは `ProductionCaptureAdapter` のinterfaceだけで、`ready=false` / `bridge_approved=false`、認証・HTTP・HLS portなし、capture呼出しは常にNotReady。両gateがONでも本実装を起動しない。fixture modeはコンストラクタでのみ注入し、環境変数・APIからproduction/fixture portを切り替える機能はない。production化には、secret mount、allowlisted HTTPS egress、HTTP/HLS/segment総時間・サイズ制限、bounded retryと再試行可能性、認証/playlist/media/ffmpeg/audio/preflightのstructured error mapping、ffmpegのresource limit、egress監査が必要。現時点のworker serviceはnetwork noneであり、本adapter fixtureが通ってもproduction capture準備完了を意味しない。
+
+## Safe Source API fixture reference（2026-10-20、wire read-only follow-up 2026-10-21）
+
+現行rfriends3 HTTP処理のfingerprint照合結果、確認済みauth/timefree/HLSフロー、確定できなかったwire詳細、fixture source boundary、URL/secret/retry/error policyは [`radioflix-timefree-source-api.md`](radioflix-timefree-source-api.md) に記録した。read-onlyのactive config確認では `radiko_auth_mode=0`。endpointのsource-defined host/pathとmode別処理も追記したが、effective `hls_type`、premium branch、timeout/retry/redirectの実効値は未確定。実requestは行っていない。これはfixture-only contractであり、production HTTP transportはNotReady。
