@@ -125,3 +125,6 @@ runtime docにrfriends3 sourceからの仕様抽出、各stage contract、将来
 従ってproduction bridgeは実装せず、`ProductionBootstrap.ready=false` / `bridge_approved=false` を維持する。candidate source manifestはfingerprint allowlistであり、実行承認ではない。production用capture Composeも未完成のままで、今回起動・deployしていない。隔離fixtureはこれまでどおりfake auth/HLS/downloaderと合成音声のみであり、実radiko経路の互換性は主張しない。
 
 本判断は実コードのread-only確認に基づく。rfriends3・native rsv/dat/sh/at・通常録音領域への変更はなく、秘密値も読み取っていない。実radiko認証・HTTP/HLS・録音は0。今回の最終再検証結果は `docs/dev-log/latest.md` に記録する。
+## 2026-10-23 production wire read-only audit
+
+Current source selectors establish radiko_auth_mode=0 and hls_type=0; the normal auth path and standard playlist request contract are now documented. The standard playlist command carries --post-data=flash=1 (POST), while tf30 is a separate conditional 300-second GET path. The active premium/account branch and per-job tf30 selection remain unresolved. Effective wget timeout/retry/redirect/proxy options were not emitted because configured values may contain credentials. Legacy auth disables TLS verification, and neither wget nor PHP stream-wrapper redirect behavior provides the required host revalidation. Thus BLOCK 3 was not started and ProductionHttpTransport stays NotReady. No helper execution or network request occurred. See radioflix-timefree-source-api.md.

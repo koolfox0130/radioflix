@@ -1,64 +1,62 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-23 22:18:34 JST
+2026-10-23 22:25:13 JST
 
 ## Current task
-BLOCK 1: Safe Source API fixtureのレビュー、隔離回帰、独立checkpoint commit/push。
+BLOCK 2: rfriends3 production wire仕様のread-only auditを完了。Production HTTPは安全性阻害の未確定点が残るため停止。
 
 ## Current phase
-Phase 4 Safe Source API fixture（ProductionHttpTransportはNotReady）。
+Phase 4 Safe Source API checkpoint pushed; Block 2 wire audit documented; ProductionHttpTransport remains NotReady.
 
 ## Status
 ready_to_commit
 
 ## Completed
-- 実Git/ファイル状態を正とし、開始HEAD `4c1dd4bb5d65d1dbb6de39d05efb89d610a07564`、branch `main`、Safe Source API関連差分を確認した。
-- Safe Source API fixtureの差分をreviewし、ProductionHttpTransportがNotReadyでsocket/DNS/HTTP clientへ到達しない境界を確認した。
-- `ProductionHttpTransport.ready=false`でrequest時にNotReadyを返し、DNS/socket/HTTP clientを起動しないことをsource/testで確認。
-- 前回作業の本番wire read-only調査では`radiko_auth_mode=0`を確認したが、`hls_type`・premium branch等は未確定。Block 2で継続調査する。
+- Safe Source API fixtureをreview・隔離検証し、commit a7615f0f0f62d020d0256565f8caff5394c802ba (Add fixture-safe RadioFlix source API)をorigin/mainへpush。HEAD・tracking ref・実remote refの一致を確認した。
+- ProductionHttpTransportはNotReadyでsocket/DNS/HTTP clientへ到達しない。
+- Block 2のread-only調査でactive radiko_auth_mode=0、source/config hls_type=0、通常auth1→auth2の順序、通常timefree playlistのPOST body flash=1、tf30 300秒slice/queryの一部を確定。
+- 不確定なaccount-dependent premium/tf30選択、effective wget flags・redirect・timeout/retry、final HLS hosts、status/body contract、TLS policyが安全なProduction HTTPを阻害するためBlock 3を開始せず停止する。
 
 ## In progress
-- staged diff review・git diff --cached --check・secret pattern scanはPASS。安全gateはOFF。Block 1をcommit/pushし、remote refを確認する。
+- wire auditの確定/条件付き/未確定とProduction HTTPを止めた理由をruntime/source-api/validation docs、latest/historyへ記録した。docs-only checkpointをreview・commit/pushする。
 
 ## Next actions
-1. Block 1 allowlistを明示stageし、cached diff・secret scan・write gatesを確認する。
-2. `Add fixture-safe RadioFlix source API`でcommit/pushし、HEAD・tracking ref・remote ref一致を確認する。
-3. 自動的にBlock 2へ進み、rfriends3 source/configをread-only解析する。HTTP/DNS/録音/deploy/gate ONはしない。
+1. docs-only Block 2 checkpointを保存する。
+2. ProductionHttpTransportはNotReadyのまま維持する。未確定wire事項の安全な解決が得られるまでBlock 3へ進まない。
 
 ## Blockers / Issues
-- 現在のruntimeとvalidation docsに記録された未commit差分は、前回Safe Source API fixture作業から保持されている。破棄・reset/restoreしていない。
-- 直近の既知wire未確定: effective `hls_type`、premium branch、全auth header/body/status、redirect/timeout/retry実効値、jobごとのplaylist base。
+- effective premium/account branchとjob単位のtf30選択、wgetの実効timeout/retry/redirect/proxy設定、応答status/body contract、stream metadataが返す全hostが未確定。
+- 既存auth wgetはTLS検証を無効にし、PHP stream wrapperもpeer/name verificationなしで、redirect先host再検証がない。安全なProduction HTTPへそのまま移植できない。
 
 ## Files changed
-- 既存Safe Source API差分: `backend/radioflix/timefree/capture/adapter.py`、`backend/radioflix/timefree/capture/source/*.py`、`backend/tests/test_timefree_capture.py`、`backend/tests/test_timefree_sources.py`。
-- schedule UI安定化: `frontend/tests/schedule-ui.mjs`（Next dev cold route compileを待つdiagnostic/120秒timeout。遷移要件維持）。
-- docs: `docs/radioflix-timefree-source-api.md`、`docs/radioflix-timefree-runtime.md`、`docs/radioflix-timefree-phase4-validation.md`、このlatestと今回のhistory snapshot。
-- `.codex/`、過去history、frontend Dockerfile backup等は無関係なuntrackedとして保持し、stage対象外。
+- Block 1実装とfixture/testsはa7615f0でcommit済み: backend/radioflix/timefree/capture/source/*、capture adapter/test、frontend/tests/schedule-ui.mjs。
+- Block 2 docs-only未commit: docs/radioflix-timefree-source-api.md、docs/radioflix-timefree-runtime.md、docs/radioflix-timefree-phase4-validation.md、this latest、current history snapshot。
+- .codex/、以前からの無関係history、frontend Dockerfile backupsは未追跡のまま保持し、stage対象外。
 
 ## Git state
-branch `main`、HEAD `4c1dd4bb5d65d1dbb6de39d05efb89d610a07564`。BLOCK 1は未commit。source API fixture差分とschedule test/doc差分を保持。`git reset` / `git restore` / `git add -A`不使用。
+branch main。Block 1 HEAD/origin/main/実remote=a7615f0f0f62d020d0256565f8caff5394c802baで一致。Block 2 docs/latest/historyのみworktree差分。既存untrackedを保持。reset/restore/add -A未使用。
 
 ## Tests
-- 前回記録（2026-10-21）: backend 257 PASS / 0 skipped、Source API 31 PASS、Capture Adapter 32 PASS、schedule 148 checks 3連続PASS、reservation 24、playback/navigation 21 PASS、typecheck/lint/build/PHP syntax/py_compile PASS。
-- BLOCK 1再実行: Safe Source API + Capture Adapter 63 PASS。backend full discovery 257 PASS / 0 skipped（PHP CLI, driver fixture, offline worker source fixture mounted, network none）。Python syntax 62 files PASS、PHP syntax 3 files PASS。schedule 148 checksをserialで3回連続PASS。reservation UI 24 PASS、playback/navigation 21 PASS。tsc PASS、lint 0 error / 5 warnings、build PASS。git diff --check PASS。
-- 初回isolated attemptsはnoexec tmpfsによるfixture executable failure、missing tmp bind、外部volumeなしのためのtest harness failures。test code変更なしでdedicated /tmp mountsに修正してPASS。並行schedule test timeoutは並列UI負荷中のみで、直列で3回連続PASS。
-- 初回sandbox frontend buildはinternal port bindで失敗。権限付きlocal build再実行でPASS。
-- 現在確認済み: `ProductionHttpTransport` request pathはNotReady fail-closed。実radiko通信0。
+- Block 1: Source API + Capture Adapter 63 PASS; backend discovery 257 PASS / 0 skipped（isolated PHP/driver/offline worker fixtures, network none）; Python syntax 62 files PASS; PHP syntax 3 files PASS.
+- schedule UI 148 checksを直列で3回連続PASS。reservation UI 24 PASS、playback/navigation 21 PASS。tsc PASS、lint 0 errors / 5 warnings、build PASS。
+- git diff --check PASS、staged diff check PASS、16 explicitly staged filesのsecret-pattern scan PASS。
+- 初回fixture環境attemptでnoexec/missing /tmp mounts、並行UI負荷のschedule timeout、sandboxのbuild internal port bindが出た。test harness/mountと実行方法のみを是正して全検証を通し、アプリコード変更はしていない。
+- Block 2 docs diff check PASS。read-only source inspection以外の本番通信テストなし。
 
 ## Runtime / Safety
-- commit前確認: backend `RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES=<unset>`（OFF）。
-- `ProductionBootstrap.ready=false`、`bridge_approved=false`。`ProductionCaptureAdapter.ready=false`、`bridge_approved=false`。`ProductionHttpTransport.ready=false`。
-- 隔離testsはnetwork none、frontendはlocalhost mockのみ。ProductionHttpTransportはNotReady。実radiko認証/HTTP/HLS/録音0。本番worker deploy/restartなし。
-- rfriends3/native rsv/dat/sh/at/通常録音領域は変更しない。
+- RFRIENDS_ENABLE_WRITES=0、RADIOFLIX_TIMEFREE_ENABLE_WRITES unset (OFF)。変更なし。
+- ProductionBootstrap.ready=false、ProductionCaptureAdapter.ready=false、bridge_approved=false、ProductionHttpTransport.ready=false。
+- 全fixture/backend testsはnetwork none、UIはlocalhost mock。実外部network・実radiko DNS/HTTP/HLS/auth/録音0。本番worker deploy/restartなし。
+- rfriends3/native rsv/dat/sh/at/通常録音領域への変更なし。
 
 ## Important decisions
-- BLOCK 1だけを別commitにする。後続BLOCK 2 docs/analysisや将来のProduction Source実装を混ぜない。
-- Explicit allowlist stagingのみ。無関係untracked history、`.codex/`、Dockerfile backupはstageしない。
-- BLOCK 2で危険な未確定仕様が残る場合はProduction HTTPの前に停止する。
+- Block 1実装checkpointとBlock 2 wire audit docs checkpointを分ける。
+- Source/configだけで安全な契約を確定できないため、実radiko疎通許可前のProduction HTTP実装を進めない。
+- 無関係な既存untracked files/historyを保持し、明示allowlistのみstageする。
 
 ## Recovery instructions
-次回はまず`git status --short`、`git diff`、HEADを確認。BLOCK 1のtest/stage/commit/push状態から続ける。実radiko通信、gate ON、本番deploy、実録音、rfriends3/native変更を行わない。
+次回はまずgit status --short、git diff、HEADを確認。Block 2 docs-only checkpointをcommit/push後、Production HTTPはNotReadyのまま停止。premium/tf30・実効HTTP client policy・host/TLSの安全な契約が解決しない限りBlock 3へ進まない。
 
 ## at spool調査（2026-10-14、read-only）
 - 10/12 before/after atjobs hash差は、17:25のrfriends3定時cronを挟んでおり、通常cronによるnative予約at job再生成が最有力。dat/sh aggregate hashと中身はbefore/after/currentで同一。

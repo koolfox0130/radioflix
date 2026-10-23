@@ -197,3 +197,8 @@ production adapterは `ProductionCaptureAdapter` のinterfaceだけで、`ready=
 ## Safe Source API fixture reference（2026-10-20、wire read-only follow-up 2026-10-21）
 
 現行rfriends3 HTTP処理のfingerprint照合結果、確認済みauth/timefree/HLSフロー、確定できなかったwire詳細、fixture source boundary、URL/secret/retry/error policyは [`radioflix-timefree-source-api.md`](radioflix-timefree-source-api.md) に記録した。read-onlyのactive config確認では `radiko_auth_mode=0`。endpointのsource-defined host/pathとmode別処理も追記したが、effective `hls_type`、premium branch、timeout/retry/redirectの実効値は未確定。実requestは行っていない。これはfixture-only contractであり、production HTTP transportはNotReady。
+## Production wire audit update (2026-10-23)
+
+The current source/config audit establishes radiko_auth_mode=0 and source-default hls_type=0; the normal mode-0 path is rfriends_auth_radiko → rf_auth → rf_radiko_normal_auth → rf_radiko_hls → auth1/auth2. The standard timefree helper uses the primary playlist endpoint and a POST form body flash=1; tf30 is a separate conditional GET flow with 300-second slices. Detailed confirmed/conditional/unknown fields and the reasons production transport remains blocked are in radioflix-timefree-source-api.md.
+
+No PHP helper, shell helper, HTTP request, DNS lookup, HLS request, or recording was run. --no-check-certificate, unbounded/unknown redirect policy, unresolved effective wget options, and account-dependent premium/tf30 selection remain reasons not to implement a production transport yet.
