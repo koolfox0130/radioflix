@@ -23,6 +23,8 @@ from radioflix.timefree.capture.source.models import (HttpRequest, HttpResponse,
                                                        RetryPolicy, Secret)
 from radioflix.timefree.capture.source.playlist import TimefreePlaylistSource
 from radioflix.timefree.capture.source.production_auth import ProductionAuthenticator
+from radioflix.timefree.capture.source.production_media import (MAX_PRODUCTION_SEGMENTS,
+    ProductionMediaFetcher)
 from radioflix.timefree.capture.source.transport import FakeHttpTransport, ProductionHttpTransport, validate_url
 from radioflix.timefree.service import deadline
 from radioflix.timefree.store import TimefreeStore
@@ -384,6 +386,219 @@ class SafeSourceApiTests(unittest.TestCase):
         response = HttpResponse(200, headers={'Set-Cookie': DUMMY_TOKEN}, body=DUMMY_TOKEN.encode())
         for value in (secret, request, response):
             self.assertNotIn(DUMMY_TOKEN, repr(value))
+
+    def test_observation_transport_is_off_by_default(self):
+        transport = ProductionHttpTransport()
+        with patch('socket.socket', side_effect=AssertionError('socket must not be opened')):
+            with self.assertRaises(SourceNotReady):
+                transport.request(HttpRequest('GET', 'https://radiko.jp/x'))
+        self.assertFalse(transport.ready)
+
+    def test_observation_transport_rejects_dns_failure_before_connect(self):
+        transport = ProductionHttpTransport(observation_mode=True, max_wire_requests=1)
+        with patch.object(transport, '_public_addresses', side_effect=SourceFailure(SourceCode.HTTP_REJECTED)):
+            with patch.object(transport, '_open_once', side_effect=AssertionError('must not connect')):
+                with self.assertRaises(SourceFailure):
+                    transport.request(HttpRequest('GET', 'https://radiko.jp/x'))
+        self.assertEqual(transport.wire_requests, 0)
+
+    def test_observation_transport_rejects_private_dns_addresses(self):
+        answer = [(2, 1, 6, '', ('127.0.0.1', 443))]
+        with patch('socket.getaddrinfo', return_value=answer):
+            with self.assertRaises(SourceFailure) as error:
+                ProductionHttpTransport._public_addresses('radiko.jp')
+        self.assertEqual(error.exception.code, SourceCode.HTTP_REJECTED)
+
+    def test_observation_transport_manual_redirect_revalidates_same_host(self):
+        transport = ProductionHttpTransport(observation_mode=True, max_wire_requests=2,
+                                             policy=RetryPolicy(max_attempts=1))
+        first = HttpResponse(302, headers={'Location': 'https://radiko.jp/safe/next'})
+        second = HttpResponse(200, headers={'Content-Type': 'text/plain'}, body=b'ok')
+        with patch.object(transport, '_public_addresses', return_value=('8.8.8.8',)):
+            with patch.object(transport, '_open_once', side_effect=[first, second]) as opened:
+                response = transport.request(HttpRequest('GET', 'https://radiko.jp/start'))
+        self.assertEqual(response.body, b'ok')
+        self.assertEqual(response.redirect_count, 1)
+        self.assertEqual(opened.call_count, 2)
+        self.assertEqual(transport.wire_requests, 2)
+
+    def test_observation_transport_rejects_cross_host_redirect(self):
+        transport = ProductionHttpTransport(observation_mode=True, max_wire_requests=2, policy=RetryPolicy(max_attempts=1))
+        with patch.object(transport, '_public_addresses', return_value=('8.8.8.8',)):
+            with patch.object(transport, '_open_once', return_value=HttpResponse(
+                    302, headers={'Location': 'https://api.radiko.jp/next'})):
+                with self.assertRaises(SourceFailure):
+                    transport.request(HttpRequest('GET', 'https://radiko.jp/start'))
+
+    def test_observation_transport_retries_server_error_bounded(self):
+        transport = ProductionHttpTransport(observation_mode=True, max_wire_requests=2, policy=RetryPolicy(max_attempts=2))
+        with patch.object(transport, '_public_addresses', return_value=('8.8.8.8',)):
+            with patch.object(transport, '_open_once', side_effect=[HttpResponse(503), HttpResponse(200, body=b'ok')]):
+                self.assertEqual(transport.request(HttpRequest('GET', 'https://radiko.jp/x')).body, b'ok')
+        self.assertEqual(transport.wire_requests, 2)
+
+    def test_observation_transport_has_hard_wire_request_budget(self):
+        transport = ProductionHttpTransport(observation_mode=True, max_wire_requests=1, policy=RetryPolicy(max_attempts=1))
+        with patch.object(transport, '_public_addresses', return_value=('8.8.8.8',)):
+            with patch.object(transport, '_open_once', return_value=HttpResponse(200, body=b'ok')):
+                transport.request(HttpRequest('GET', 'https://radiko.jp/x'))
+                with self.assertRaises(SourceNotReady):
+                    transport.request(HttpRequest('GET', 'https://radiko.jp/x'))
+
+    @staticmethod
+    def _media_fixture(segment_count=3):
+        lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:10', '#EXT-X-MEDIA-SEQUENCE:1']
+        for index in range(segment_count):
+            lines.extend(['#EXTINF:10,', f'segment-{index + 1}.ts'])
+        lines.append('#EXT-X-ENDLIST')
+        return ('\n'.join(lines) + '\n').encode()
+
+    @staticmethod
+    def _ts_fixture(size=376):
+        data = bytearray(b'\x00' * size)
+        for offset in range(0, size, 188):
+            data[offset] = 0x47
+        return bytes(data)
+
+    def _production_media(self, transport, root):
+        return ProductionMediaFetcher(transport, TimefreePlaylistSource(transport), work_root=Path(root))
+
+    def test_production_media_fetcher_downloads_only_requested_first_segment(self):
+        transport = FakeHttpTransport([
+            HttpResponse(200, headers={'Content-Type': 'application/x-mpegURL'},
+                        body=self._media_fixture(5).replace(b'#EXT-X-ENDLIST\n', b'')),
+            HttpResponse(200, headers={'Content-Type': 'video/mp2t'}, body=self._ts_fixture()),
+        ])
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            files = self._production_media(transport, root).fetch_segments(
+                'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8', auth, workspace, max_segments=1)
+            self.assertEqual(len(files), 1)
+            self.assertEqual(files[0].path.read_bytes(), self._ts_fixture())
+            self.assertEqual(files[0].path.name, 'segment-001.bin')
+            self.assertEqual(files[0].status, 200)
+            self.assertEqual(files[0].content_type, 'video/mp2t')
+            self.assertEqual(files[0].media_format, 'mpeg-ts')
+            self.assertEqual(len(transport.requests), 2)
+            self.assertEqual(transport.requests[1].headers['X-Radiko-AreaId'], 'fixture-area')
+            self.assertFalse(ProductionMediaFetcher.ready)
+
+    def test_production_media_fetcher_caps_at_three_and_rejects_four(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        url = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8'
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            transport = FakeHttpTransport([])
+            fetcher = self._production_media(transport, root)
+            for invalid in (0, 4, True):
+                with self.assertRaises(SourceFailure):
+                    fetcher.fetch_segments(url, auth, workspace, max_segments=invalid)
+            self.assertEqual(transport.requests, [])
+            transport = FakeHttpTransport([HttpResponse(200,
+                headers={'Content-Type': 'application/vnd.apple.mpegurl'}, body=self._media_fixture(5)),
+                *[HttpResponse(200, headers={'Content-Type': 'video/mp2t'}, body=self._ts_fixture())
+                  for _ in range(MAX_PRODUCTION_SEGMENTS)]])
+            files = self._production_media(transport, root).fetch_segments(
+                url, auth, workspace, max_segments=MAX_PRODUCTION_SEGMENTS)
+            self.assertEqual(len(files), MAX_PRODUCTION_SEGMENTS)
+            self.assertEqual(len(transport.requests), MAX_PRODUCTION_SEGMENTS + 1)
+
+    def test_production_media_fetcher_rejects_unsafe_manifest_paths(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            fetcher = self._production_media(FakeHttpTransport([]), root)
+            urls = (
+                'https://attacker.invalid/tf/media.m3u8',
+                'https://tf-f-rpaa-radiko.smartstream.ne.jp/other/media.m3u8',
+                'https://user@tf-f-rpaa-radiko.smartstream.ne.jp/tf/media.m3u8',
+                'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/%2e%2e/media.m3u8',
+            )
+            for url in urls:
+                with self.subTest(url=url), self.assertRaises(SourceFailure):
+                    fetcher.fetch_segments(url, auth, workspace)
+
+    def test_production_media_fetcher_rejects_segment_outside_manifest_path(self):
+        body = b'#EXTM3U\n#EXTINF:10,\nhttps://tf-f-rpaa-radiko.smartstream.ne.jp/elsewhere/x.ts\n#EXT-X-ENDLIST\n'
+        transport = FakeHttpTransport([HttpResponse(200, headers={'Content-Type': 'application/x-mpegURL'}, body=body)])
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            with self.assertRaises(SourceFailure):
+                self._production_media(transport, root).fetch_segments(
+                    'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8', auth, workspace)
+            self.assertEqual(len(transport.requests), 1)
+
+    def test_production_media_fetcher_rejects_http_errors_timeout_and_redirect(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        manifest_url = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8'
+        cases = (
+            (404, [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(404)]),
+            (403, [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(403)]),
+            (429, [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(429)]),
+            (206, [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(206, headers={'Content-Type':'video/mp2t'}, body=self._ts_fixture())]),
+            (503, [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(503), HttpResponse(503), HttpResponse(503)]),
+            ('timeout', [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), TimeoutError(), TimeoutError(), TimeoutError()]),
+            ('redirect', [HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)), HttpResponse(302, headers={'Location':'https://attacker.invalid/steal'})]),
+        )
+        for label, responses in cases:
+            with self.subTest(status=label), tempfile.TemporaryDirectory() as root:
+                workspace = Path(root) / 'job'; workspace.mkdir()
+                transport = FakeHttpTransport(responses)
+                with self.assertRaises(SourceFailure):
+                    self._production_media(transport, root).fetch_segments(manifest_url, auth, workspace)
+                self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_production_media_fetcher_rejects_empty_wrong_type_and_truncated(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        manifest_url = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8'
+        segments = (
+            HttpResponse(200, headers={'Content-Type':'video/mp2t'}, body=b''),
+            HttpResponse(200, headers={'Content-Type':'text/html'}, body=b'<html>error</html>'),
+            HttpResponse(200, headers={'Content-Type':'video/mp2t'}, body=self._ts_fixture(187)),
+            HttpResponse(200, headers={'Content-Type':'audio/aac'}, body=b'\xff\xf1\x50\x80\xff\xff\xfc'),
+        )
+        for segment in segments:
+            with self.subTest(size=len(segment.body), content_type=segment.headers.get('Content-Type')):
+                with tempfile.TemporaryDirectory() as root:
+                    workspace = Path(root) / 'job'; workspace.mkdir()
+                    transport = FakeHttpTransport([
+                        HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)),
+                        segment,
+                    ])
+                    with self.assertRaises(SourceFailure):
+                        self._production_media(transport, root).fetch_segments(manifest_url, auth, workspace)
+                    self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_production_media_fetcher_rejects_oversized_segment(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        oversized = self._ts_fixture() + b'\x00' * (16 * 1024 * 1024)
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            transport = FakeHttpTransport([
+                HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)),
+                HttpResponse(200, headers={'Content-Type':'video/mp2t'}, body=oversized),
+            ])
+            with self.assertRaises(SourceFailure):
+                self._production_media(transport, root).fetch_segments(
+                    'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8', auth, workspace)
+            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_production_media_fetcher_does_not_overwrite_existing_segment(self):
+        auth = AuthContext(Secret(DUMMY_TOKEN), 'fixture-area')
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / 'job'; workspace.mkdir()
+            existing = workspace / 'segment-001.bin'; existing.write_bytes(b'preserve')
+            transport = FakeHttpTransport([
+                HttpResponse(200, headers={'Content-Type':'application/x-mpegURL'}, body=self._media_fixture(1)),
+                HttpResponse(200, headers={'Content-Type':'video/mp2t'}, body=self._ts_fixture()),
+            ])
+            with self.assertRaises(SourceFailure):
+                self._production_media(transport, root).fetch_segments(
+                    'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/test/media.m3u8', auth, workspace)
+            self.assertEqual(existing.read_bytes(), b'preserve')
+            self.assertEqual(list(workspace.iterdir()), [existing])
 
 
 if __name__ == '__main__':

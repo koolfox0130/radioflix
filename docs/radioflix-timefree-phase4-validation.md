@@ -82,6 +82,12 @@ npm run lint
 
 最終結果・既知の未確認項目・安全状態は `docs/dev-log/latest.md` と対応するhistory snapshotに記録する。過去の成功を今回の結果として扱わない。
 
+## 2026-10-24 bounded segment observation and offline regression
+
+通常pc_html5認証で取得したareafree=0の5分番組について、HTTP/manifest観測の後に先頭segmentを1個だけ取得した。media manifestは3 entry、`ENDLIST`なし、key/mapなし。segmentはHTTP 200、`application/octet-stream`、31,707 bytes、約0.09秒でAAC ADTS framingを確認した。test workspace内のファイルは検証後に削除し、segmentの追加取得、ffmpeg、結合、publisher、本番録音は行っていない。
+
+コードの隔離回帰では `ProductionHttpTransport` の通常構築はNotReadyのまま、`ProductionMediaFetcher` は最大3 segment（既定1）に制限される。FakeHttpTransportによるSource API 52 tests PASS。backend全体278 tests PASS / 0 skipped（network none、read-only root、non-root、cap-drop ALL、no-new-privileges、専用test volume）。PHP syntax 5 files PASS、Python compileall PASS。UI schedule 148 checks、reservation 24 scenarios、playback/navigation 21 checks PASS。`npx tsc --noEmit` PASS、lint error 0 / existing warnings 5、build PASS、`git diff --check` PASS。実行時の詳細と最終安全snapshotはdev-logを参照。
+
 ## 2026-10-16 bootstrap調査と隔離回帰
 
 今回の作業開始時HEADはPhase 4 checkpoint `2ad058817b520e85f8f830ac160bf617afbf9f69`。稼働中rfriends3から `rf_timefree.php` / `rf_downloader.php` と直接依存候補4ファイルを読み取り専用で取得した。6 source hashesは `bootstrap-source-manifest.json` に記録し、fixture 2 sourceを含むfingerprint検証はPASS。

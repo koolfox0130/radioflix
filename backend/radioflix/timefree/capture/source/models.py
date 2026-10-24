@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 
+MAX_REQUEST_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class Secret:
     _value: str = field(repr=False)
@@ -42,6 +45,7 @@ class HttpRequest:
     headers: Mapping[str, str | Secret] = field(default_factory=dict, repr=False)
     body: bytes | None = field(default=None, repr=False)
     timeout: RequestTimeout = field(default_factory=RequestTimeout)
+    max_response_bytes: int = 2 * 1024 * 1024
 
     def __repr__(self) -> str:
         from urllib.parse import urlsplit
@@ -54,6 +58,7 @@ class HttpResponse:
     status: int
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     body: bytes = field(default=b'', repr=False)
+    redirect_count: int = 0
 
     def __repr__(self) -> str:
         return f'HttpResponse(status={self.status}, headers=<redacted>, body=<redacted>)'
