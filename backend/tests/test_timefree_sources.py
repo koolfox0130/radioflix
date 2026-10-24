@@ -17,10 +17,12 @@ from radioflix.timefree.capture.fixture import SyntheticAudioTranscoder
 from radioflix.timefree.capture.production import ProductionCaptureAdapter
 from radioflix.timefree.capture.source.auth import RadikoAuthenticationSource
 from radioflix.timefree.capture.source.errors import SourceCode, SourceFailure, SourceNotReady
+from radioflix.timefree.capture.source.full_key import extract_pc_html5_full_key
 from radioflix.timefree.capture.source.media import HlsMediaSource
 from radioflix.timefree.capture.source.models import (HttpRequest, HttpResponse, RequestTimeout,
                                                        RetryPolicy, Secret)
 from radioflix.timefree.capture.source.playlist import TimefreePlaylistSource
+from radioflix.timefree.capture.source.production_auth import ProductionAuthenticator
 from radioflix.timefree.capture.source.transport import FakeHttpTransport, ProductionHttpTransport, validate_url
 from radioflix.timefree.service import deadline
 from radioflix.timefree.store import TimefreeStore
@@ -64,6 +66,86 @@ class SafeSourceApiTests(unittest.TestCase):
         with self.assertRaises(SourceFailure) as error:
             self.auth_source(FakeHttpTransport([HttpResponse(200, body=b'not json')])).authenticate(METADATA)
         self.assertEqual(error.exception.code, SourceCode.AUTH_FAILED)
+
+    def test_current_pc_html5_full_key_extracts_before_applying_offsets(self):
+        fixture_key = b'0123456789abcdef0123456789abcdef01234567'
+        js = b'prefix RadikoJSPlayer(foo, "pc_html5", "' + fixture_key + b'", {options:true}) suffix'
+        full_key = extract_pc_html5_full_key(js)
+        self.assertEqual(len(full_key), 40)
+        self.assertEqual(hashlib.sha256(full_key).hexdigest(), hashlib.sha256(fixture_key).hexdigest())
+
+    def test_current_upstream_fallback_is_bounded_and_fingerprinted(self):
+        full_key = extract_pc_html5_full_key(b'no supported player key')
+        self.assertEqual(len(full_key), 40)
+        self.assertEqual(hashlib.sha256(full_key).hexdigest(),
+                         '7fda9e960ca6cc426db6df81066a1d2f98790bc7ede1678cf7d5fa345c934769')
+
+    def test_production_authenticator_uses_current_normal_auth_contract(self):
+        fixture_key = b'0123456789abcdef0123456789abcdef01234567'
+        js = b'RadikoJSPlayer(x, "pc_html5", "' + fixture_key + b'", {x:1})'
+        token = 'SYNTHETIC_AUTH1_TOKEN'
+        transport = FakeHttpTransport([
+            HttpResponse(200, headers={'Content-Type': 'application/javascript'}, body=js),
+            HttpResponse(200, headers={
+                'X-Radiko-AuthToken': token,
+                'X-Radiko-KeyOffset': '3',
+                'X-Radiko-KeyLength': '16',
+            }),
+            HttpResponse(200, body=b'JP13,\xe6\x9d\xb1\xe4\xba\xac'),
+        ])
+        auth = ProductionAuthenticator(transport).authenticate(METADATA)
+        self.assertEqual(auth.area_id, 'JP13')
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual([r.method for r in transport.requests], ['GET', 'GET', 'GET'])
+        self.assertEqual([r.url for r in transport.requests], [
+            'https://radiko.jp/apps/js/playerCommon.js',
+            'https://radiko.jp/v2/api/auth1',
+            'https://radiko.jp/v2/api/auth2',
+        ])
+        self.assertEqual(set(transport.requests[1].headers), {
+            'X-Radiko-App', 'X-Radiko-App-Version', 'X-Radiko-Device', 'X-Radiko-User',
+        })
+        self.assertEqual(set(transport.requests[2].headers), {
+            'X-Radiko-Device', 'X-Radiko-User', 'X-Radiko-AuthToken', 'X-Radiko-PartialKey',
+        })
+        self.assertIsInstance(transport.requests[2].headers['X-Radiko-AuthToken'], Secret)
+        self.assertIsInstance(transport.requests[2].headers['X-Radiko-PartialKey'], Secret)
+        self.assertNotIn(token, repr(transport.requests[2]))
+        self.assertNotIn(token, repr(auth))
+        self.assertEqual(len(transport.requests[2].headers['X-Radiko-PartialKey'].reveal_for_transport()), 24)
+
+    def test_production_authenticator_rejects_out_of_range_partial_key_before_auth2(self):
+        js = b'RadikoJSPlayer(x, "pc_html5", "0123456789abcdef0123456789abcdef01234567", {x:1})'
+        transport = FakeHttpTransport([
+            HttpResponse(200, body=js),
+            HttpResponse(200, headers={
+                'X-Radiko-AuthToken': 'SYNTHETIC_AUTH1_TOKEN',
+                'X-Radiko-KeyOffset': '39',
+                'X-Radiko-KeyLength': '2',
+            }),
+        ])
+        with self.assertRaises(SourceFailure) as error:
+            ProductionAuthenticator(transport).authenticate(METADATA)
+        self.assertEqual(error.exception.code, SourceCode.AUTH_FAILED)
+        self.assertEqual(len(transport.requests), 2)
+
+    def test_production_authenticator_preserves_not_ready_gate(self):
+        with self.assertRaises(SourceNotReady):
+            ProductionAuthenticator(ProductionHttpTransport()).authenticate(METADATA)
+
+    def test_production_authenticator_never_uses_metadata_for_urls_or_premium(self):
+        transport = FakeHttpTransport([
+            HttpResponse(200, body=b'fallback'),
+            HttpResponse(200, headers={
+                'X-Radiko-AuthToken': 'SYNTHETIC_AUTH1_TOKEN',
+                'X-Radiko-KeyOffset': '0', 'X-Radiko-KeyLength': '8',
+            }),
+            HttpResponse(200, body=b'JP13,synthetic'),
+        ])
+        malicious = SimpleNamespace(station='../../attacker', start_at='ignore', end_at='ignore', session='secret')
+        ProductionAuthenticator(transport).authenticate(malicious)
+        self.assertTrue(all(r.url.startswith('https://radiko.jp/') for r in transport.requests))
+        self.assertTrue(all('session' not in r.url and 'cookie' not in r.url for r in transport.requests))
 
     def test_fake_playlist_and_hls_media_complete_through_same_sources(self):
         transport = FakeHttpTransport([AUTH, TIMEFREE, MASTER_RESPONSE, MEDIA_RESPONSE, SEGMENT])
