@@ -1,62 +1,55 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-23 22:32:43 JST
+2026-10-24 17:28:21 JST
 
 ## Current task
-BLOCK 2: rfriends3 production wire read-only audit completed; production implementation stopped at unresolved auth/HTTP safety contracts.
+BLOCK 1: checkpoint review and push for observation docs + schedule UI wait stabilization; next investigate auth2 401 using the three requested evidence tracks.
 
 ## Current phase
-Phase 4 Safe Source API checkpoint pushed; Block 2 wire audit documented; ProductionHttpTransport remains NotReady.
+Phase 4 Radiko observation checkpoint being committed; no additional Radiko request during checkpoint work.
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Safe Source API fixtureをreview・隔離検証し、commit a7615f0f0f62d020d0256565f8caff5394c802ba (Add fixture-safe RadioFlix source API)をorigin/mainへpush。HEAD・tracking ref・実remote refの一致を確認した。
-- ProductionHttpTransportはNotReadyでsocket/DNS/HTTP clientへ到達しない。
-- Block 2 read-only: radiko_auth_mode=0, hls_type=0; timefree branch hardcodes tf30 helper; premium.ini numeric selectors premium=1/areafree=1/timefree30=0; auth1/auth2 retry/timeout options were redacted-extracted. Block 2 docs commits 780a359 and 3e93155 pushed after Block 1 a7615f0.
-- rf_premium_mode()/product statusに依存するnormal-vs-premium auth mode、final HLS hosts、tf30/HLS request bounds、status/body contract、redirect/TLS policyが未確定でBlock 3未開始。
+- Reviewed full diffs for `docs/dev-log/latest.md`, runtime/source-api/validation docs, and `frontend/tests/schedule-ui.mjs`; changes match the previous observation and schedule test stabilization.
+- Prior live observation and complete offline regression results are recorded below; current safety remains fail-closed.
 
 ## In progress
-- wire auditの確定/条件付き/未確定とProduction HTTPを止めた理由をruntime/source-api/validation docs、latest/historyへ修正記録した。corrective docs-only checkpointをreview・commit/pushする。
+- Explicitly stage the reviewed docs/test and the matching 2026-10-24 observation history snapshot, run staged diff/secret checks, then create and push one checkpoint. Preserve unrelated untracked files.
 
 ## Next actions
-1. corrected current downloader/auth branch findingsをdocs-only follow-up checkpointとして保存する。
-2. ProductionHttpTransportはNotReadyのまま維持する。未確定wire事項の安全な解決が得られるまでBlock 3へ進まない。
+1. Commit the reviewed observation/docs + schedule test checkpoint and push `origin/main`.
+2. Verify HEAD, origin/main, and remote ref match.
+3. Continue BLOCK 2 source-only comparison of endpoint/session, partial-key generation, and auth profile; run at most 2–3 evidence-based auth candidates only if no safer resolution exists.
 
 ## Blockers / Issues
-- rf_premium_mode()/product statusによるcapture auth modeが未確認。tf30 branchはtimefree-specific caseでhardcode。auth retry/timeoutはredacted確認済みだがtf30/HLSはrequest boundsなし。response contract、redirect safety、final stream host setが未確定。
-- 既存auth wgetはTLS検証を無効にし、PHP stream wrapperもpeer/name verificationなしで、redirect先host再検証がない。安全なProduction HTTPへそのまま移植できない。
+- Previous auth2 response was 401; body and sensitive header values were not inspected. No retry/playlist request occurred after that response.
+- Effective station-specific `rf_premium_mode()` remains unknown. Production HTTP is still unsafe to implement.
 
 ## Files changed
-- Block 1 implementation/tests committed at a7615f0; Block 2 wire docs committed at 780a359 and effective option follow-up at 3e93155.
-- Current correction docs-only change: docs/radioflix-timefree-source-api.md、docs/radioflix-timefree-runtime.md、docs/radioflix-timefree-phase4-validation.md、this latest、current history snapshot。
-- .codex/、以前からの無関係history、frontend Dockerfile backupsは未追跡のまま保持し、stage対象外。
+- Reviewed tracked files: `docs/dev-log/latest.md`, `docs/radioflix-timefree-phase4-validation.md`, `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-source-api.md`, `frontend/tests/schedule-ui.mjs`.
+- Matching observation history: `docs/dev-log/history/2026-10-24_1511_radiko-observation-stopped.md`.
+- All other untracked history, `.codex/`, and Dockerfile backups remain excluded and untouched.
 
 ## Git state
-branch main。HEAD/origin/main/実remote=3e93155fb5ab9c3ac6a7ee638aed633c1a475ad8で一致。current source-branch correction docs/latest/historyのみworktree差分。既存untrackedを保持。reset/restore/add -A未使用。
+branch main; HEAD `7a5eae1ef83d3827fcfc0bab268d0c926f4d9350` = origin/main before checkpoint. Reviewed changes are not committed yet. Only explicit target files will be staged; no reset/restore/add -A.
 
 ## Tests
-- Block 1: Source API + Capture Adapter 63 PASS; backend discovery 257 PASS / 0 skipped（isolated PHP/driver/offline worker fixtures, network none）; Python syntax 62 files PASS; PHP syntax 3 files PASS.
-- schedule UI 148 checksを直列で3回連続PASS。reservation UI 24 PASS、playback/navigation 21 PASS。tsc PASS、lint 0 errors / 5 warnings、build PASS。
-- git diff --check PASS、staged diff check PASS、16 explicitly staged filesのsecret-pattern scan PASS。
-- 初回fixture環境attemptでnoexec/missing /tmp mounts、並行UI負荷のschedule timeout、sandboxのbuild internal port bindが出た。test harness/mountと実行方法のみを是正して全検証を通し、アプリコード変更はしていない。
-- Block 2 docs diff check PASS; after branch correction rerun before commit. Read-only source inspection only; no production communication test.
+Previously completed for this reviewed set: backend 257 PASS / 0 skipped; Python compileall PASS; PHP syntax 5 files PASS; schedule UI 148 checks x3 PASS after wait stabilization; reservation 24 PASS; playback/navigation 21 PASS; typecheck PASS; lint 0 errors/5 warnings; build PASS. `git diff --check` PASS. Rerun staged diff check and secret scan before commit.
 
 ## Runtime / Safety
-- RFRIENDS_ENABLE_WRITES=0、RADIOFLIX_TIMEFREE_ENABLE_WRITES unset (OFF)。変更なし。
-- ProductionBootstrap.ready=false、ProductionCaptureAdapter.ready=false、bridge_approved=false、ProductionHttpTransport.ready=false。
-- 全fixture/backend testsはnetwork none、UIはlocalhost mock。実外部network・実radiko DNS/HTTP/HLS/auth/録音0。本番worker deploy/restartなし。
-- rfriends3/native rsv/dat/sh/at/通常録音領域への変更なし。
+- Last observed: `RFRIENDS_ENABLE_WRITES=0`, `RADIOFLIX_TIMEFREE_ENABLE_WRITES` unset/OFF; active RadioFlix reservation=0, weekly=0, timefree jobs=0/table absent. rfriends3 running/no healthcheck. Native dat/sh and atq fingerprints were unchanged before/after.
+- Previous live traffic was limited to DNS/TLS and playerCommon/auth1/auth2. auth2=401. No playlist/HLS/segment, ffmpeg, recording, gate change, deploy/restart, native write, or publisher operation.
+- `ready=false`, `bridge_approved=false`; no credential/token/cookie/header values were emitted or persisted.
 
 ## Important decisions
-- Block 1実装checkpointとBlock 2 wire audit docs checkpointを分ける。
-- Source/configだけで安全な契約を確定できないため、実radiko疎通許可前のProduction HTTP実装を進めない。
-- 無関係な既存untracked files/historyを保持し、明示allowlistのみstageする。
+- Commit only the reviewed observation docs, schedule test stabilization, and matching history snapshot; exclude unrelated untracked files.
+- During BLOCK 2 keep to the three evidence tracks and no arbitrary credential/profile brute force. Never display/persist secrets.
 
 ## Recovery instructions
-次回はまずgit status --short、git diff、HEADを確認。Block 2 correction docs-only checkpointをcommit/push後、Production HTTPはNotReadyのまま停止。premium/tf30・実効HTTP client policy・host/TLSの安全な契約が解決しない限りBlock 3へ進まない。
+After push, continue auth2 401 diagnosis from endpoint/session, partial key, and auth profile evidence. Preserve fail-closed flags and all unrelated worktree files. No audio segments, ffmpeg, recording, gate ON, deploy, or rfriends3/native modifications.
 
 ## at spool調査（2026-10-14、read-only）
 - 10/12 before/after atjobs hash差は、17:25のrfriends3定時cronを挟んでおり、通常cronによるnative予約at job再生成が最有力。dat/sh aggregate hashと中身はbefore/after/currentで同一。

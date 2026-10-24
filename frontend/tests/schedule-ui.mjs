@@ -109,7 +109,7 @@ try {
         ...(past ? { timefree_state: timefreeState, timefree_label: timefreeLabels[timefreeState], timefree_enabled: timefreeEnabled && timefreeState === "available" } : {}),
       }]}]});
     });
-    await page.goto(base); await page.getByText("テスト出演者",{exact:true}).waitFor();
+    await page.goto(base, { waitUntil: "domcontentloaded" }); await page.getByText("テスト出演者",{exact:true}).waitFor();
     await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
     assert.equal(new URL(await page.locator('link[rel="manifest"]').getAttribute("href"), base).pathname, "/radioflix.webmanifest");checks++;
     assert.equal(await page.getByRole("navigation",{name:"メインナビゲーション"}).getByRole("link").count(),3);checks++;
@@ -184,7 +184,7 @@ try {
     await page.getByText("タイムフリー録音は現在無効です。", { exact: true }).waitFor();
     assert(await record.isDisabled()); assert.equal(timefreePosts, 2); checks++;
     failed=true;await page.getByRole("button",{name:"再読み込み"}).click();await page.getByRole("alert").filter({hasText:"この日の番組表を取得できませんでした"}).waitFor();assert.equal(await page.locator("summary").count(),0);checks++;
-    failed=false;await page.getByRole("button",{name:"ラジオ日本",exact:true}).click();await page.locator("summary").waitFor();checks++;
+    failed=false;await page.getByRole("button",{name:"ラジオ日本",exact:true}).click();await page.waitForURL(url=>url.searchParams.get("station")==="JORF");await page.locator("summary").waitFor();checks++;
     const navigationPage=await context.newPage();let documentRequests=0;
     const navigationDiagnostics = { width, console: [], pageErrors: [], failedRequests: [], urls: [], navigationRequests: [], navigationResponses: [], routeRequests: [], routeResponses: [], clicks: [] };
     await navigationPage.addInitScript(() => window.addEventListener("click", event => {
@@ -200,7 +200,7 @@ try {
     navigationPage.on("response", response => { if (response.url().includes("reservations") || response.url().includes("_rsc")) navigationDiagnostics.routeResponses.push(`${response.status()} ${response.url()}`); });
     navigationPage.on("framenavigated", frame => { if (frame === navigationPage.mainFrame()) navigationDiagnostics.urls.push(frame.url()); });
     navigationPage.on("request", request => { if (request.isNavigationRequest()) documentRequests++; });
-    await navigationPage.goto(base);await navigationPage.getByText("テスト出演者",{exact:true}).waitFor();
+    await navigationPage.goto(base, { waitUntil: "domcontentloaded" });await navigationPage.getByText("テスト出演者",{exact:true}).waitFor();
     await navigationPage.getByRole("button",{name:"TBSラジオ",exact:true}).click();await navigationPage.waitForURL(url=>url.searchParams.get("station")==="TBS");
     await navigationPage.getByRole("button",{name:labels[7 + 1],exact:true}).click();await navigationPage.waitForURL(url=>url.searchParams.get("date")===offset(1));
     await navigationPage.getByRole("navigation",{name:"メインナビゲーション"}).getByRole("link",{name:"予約一覧"}).click();
