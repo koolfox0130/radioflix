@@ -46,7 +46,9 @@ if ($operation === 'atq') {
 @unittest.skipUnless(PHP, 'PHP CLI unavailable; use the documented isolated container command')
 class DriverTests(unittest.TestCase):
     def setUp(self):
-        root = Path('/tmp/radioflix-driver-tests')
+        # Executable fake at/atq/atrm scripts need an explicit exec-enabled
+        # test volume when /tmp is mounted noexec in the isolated test image.
+        root = Path(os.environ.get('RADIOFLIX_DRIVER_TEST_ROOT', '/tmp/radioflix-driver-tests'))
         root.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temp.cleanup)

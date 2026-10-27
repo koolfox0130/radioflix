@@ -12,6 +12,8 @@ class CaptureMetadata:
     station: str
     start_at: datetime
     end_at: datetime
+    # Current live source supports only the ordinary in-area mode.
+    areafree: int = 0
 
 
 @dataclass(frozen=True)

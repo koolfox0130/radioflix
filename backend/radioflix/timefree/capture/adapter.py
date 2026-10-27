@@ -76,7 +76,7 @@ class CaptureAdapter:
         if problem:
             raise CaptureFailure('job_not_eligible')
         expected = (end_at - start_at).total_seconds()
-        metadata = CaptureMetadata(ident, episode_id, broadcast.station, start_at, end_at)
+        metadata = CaptureMetadata(ident, episode_id, broadcast.station, start_at, end_at, areafree=0)
         return row, metadata, expected
 
     def _check_duplicate(self, row: dict) -> None:

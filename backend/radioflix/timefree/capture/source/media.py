@@ -38,16 +38,22 @@ class HlsMediaSource:
         try:
             playlist_url = validate_url(playlist.url)
             master = self.transport.request(HttpRequest('GET', playlist_url,
-                headers={'X-Radiko-AuthToken': auth_header(auth)},
+                headers={'X-Radiko-AuthToken': auth_header(auth),
+                         'X-Radiko-AreaId': auth.area_id},
                 timeout=bounded_timeout(self.timeout, deadline - time.monotonic())))
+            if master.status != 200:
+                raise SourceFailure(SourceCode.HTTP_REJECTED)
             segments = self.playlist_parser.parse_hls(master.body, playlist_url)
             if b'#EXT-X-STREAM-INF:' in master.body:
                 if len(segments) != 1:
                     raise SourceFailure(SourceCode.MEDIA_FETCH_FAILED)
                 variant = segments[0]
                 media_playlist = self.transport.request(HttpRequest('GET', variant,
-                    headers={'X-Radiko-AuthToken': auth_header(auth)},
+                    headers={'X-Radiko-AuthToken': auth_header(auth),
+                             'X-Radiko-AreaId': auth.area_id},
                     timeout=bounded_timeout(self.timeout, deadline - time.monotonic())))
+                if media_playlist.status != 200:
+                    raise SourceFailure(SourceCode.HTTP_REJECTED)
                 if b'#EXT-X-ENDLIST' not in media_playlist.body:
                     raise SourceFailure(SourceCode.MEDIA_FETCH_FAILED)
                 segments = self.playlist_parser.parse_hls(media_playlist.body, variant)
@@ -61,7 +67,8 @@ class HlsMediaSource:
                     for segment in segments:
                         request_timeout = bounded_timeout(self.timeout, deadline - time.monotonic())
                         response = self.transport.request(HttpRequest('GET', validate_url(segment),
-                            headers={'X-Radiko-AuthToken': auth_header(auth)}, timeout=request_timeout))
+                            headers={'X-Radiko-AuthToken': auth_header(auth),
+                                     'X-Radiko-AreaId': auth.area_id}, timeout=request_timeout))
                         if not response.body or len(response.body) > MAX_SEGMENT_BYTES:
                             raise SourceFailure(SourceCode.MEDIA_FETCH_FAILED)
                         total += len(response.body)

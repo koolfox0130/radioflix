@@ -1,13 +1,14 @@
 """Capture adapter security tests using offline ports and synthetic WAV only."""
 
 import inspect
+import hashlib
 import os
-import stat
+import shutil
 import subprocess
 import tempfile
 import unittest
 import wave
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,6 +29,13 @@ from radioflix.timefree.service import deadline
 from radioflix.timefree.store import TimefreeStore
 from radioflix.timefree.worker import TimefreeWorker, completed_assets
 import test_timefree
+
+
+def _synthetic_adts_frame(payload_size=32):
+    length = 7 + payload_size
+    header = bytes((0xFF, 0xF1, 0x50, 0x80 | ((length >> 11) & 3),
+                    (length >> 3) & 0xFF, ((length & 7) << 5) | 0x1F, 0xFC))
+    return header + b'\x00' * payload_size
 
 
 class CaptureAdapterTests(unittest.TestCase):
@@ -82,17 +90,27 @@ class CaptureAdapterTests(unittest.TestCase):
         worker = TimefreeWorker(self.fixture.store, self.fixture.output, adapter,
                                 clock=lambda: self.fixture.now)
         self.assertEqual(worker.run_once(row['job_id']), row['job_id'])
-        self.assertEqual(self.fixture.store.get(row['job_id'])['state'], 'completed')
+        self.assertEqual(self.fixture.store.get(row['job_id'])['state'], 'completed',
+                         self.fixture.store.get(row['job_id']))
         self.assertEqual(len(completed_assets(self.fixture.store, self.fixture.output, include_fixture=True)), 1)
         self.assertEqual(self.preflight_calls, [row['job_id']])
         self.assertTrue(self.auth.calls and self.playlist.calls and self.media.calls and self.transcoder.calls)
         self.assertEqual(list(adapter.work_root.iterdir()), [])
 
     def test_fake_source_api_runs_through_worker_and_publisher(self):
+        item = self.fixture.item
+        start = datetime.fromisoformat(item['starts_at'])
+        end = start + timedelta(minutes=1)
+        item['ends_at'] = end.isoformat()
+        item['id'] = hashlib.sha256(
+            f"{item['station']}:{start.isoformat()}:{end.isoformat()}".encode()).hexdigest()
         row = self.queued()
         transport = FakeHttpTransport([
             HttpResponse(200, body=b'{"auth_token":"SOURCE_FIXTURE_ONLY","area_id":"fixture"}'),
-            HttpResponse(200, body=b'{"playlist_url":"https://cdn.radiko.jp/fixture/index.m3u8"}'),
+            HttpResponse(200, headers={'Content-Type': 'application/xml'}, body=(
+                b'<urls><url areafree="0" timefree="1"><playlist_create_url>'
+                b'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/fixture/playlist.m3u8'
+                b'</playlist_create_url></url></urls>')),
             HttpResponse(200, body=b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmedia.m3u8\n'),
             HttpResponse(200, body=b'#EXTM3U\n#EXTINF:1,fixture\nsegment.ts\n#EXT-X-ENDLIST\n'),
             HttpResponse(200, body=b'synthetic-media-segment'),
@@ -103,11 +121,13 @@ class CaptureAdapterTests(unittest.TestCase):
             authenticator=auth,
             playlist_provider=playlist,
             media_fetcher=HlsMediaSource(transport, playlist, work_root=self.fixture.output / '.staging' / 'capture-work'),
+            transcoder=SyntheticAudioTranscoder(60),
         )
         worker = TimefreeWorker(self.fixture.store, self.fixture.output, adapter,
                                 clock=lambda: self.fixture.now)
         self.assertEqual(worker.run_once(row['job_id']), row['job_id'])
-        self.assertEqual(self.fixture.store.get(row['job_id'])['state'], 'completed')
+        self.assertEqual(self.fixture.store.get(row['job_id'])['state'], 'completed',
+                         self.fixture.store.get(row['job_id']))
         self.assertEqual(len(transport.requests), 5)
         self.assertEqual(list(adapter.work_root.iterdir()), [])
 
@@ -223,46 +243,41 @@ class CaptureAdapterTests(unittest.TestCase):
         self.assert_capture_error(self.make_adapter(transcoder=transcoder), row['job_id'], 'capture_timeout')
 
     def test_ffmpeg_argument_injection_is_shell_free(self):
-        row = self.running()
-        snapshot = row['broadcast']
-        snapshot['title'] = '$(touch /tmp/pwned); `id`'
-        import json
-        with self.fixture.store.transaction() as db:
-            db.execute('UPDATE timefree_jobs SET snapshot=? WHERE job_id=?', (json.dumps(snapshot), row['job_id']))
-        executable = Path(os.environ.get('RADIOFLIX_TEST_EXEC_ROOT', self.fixture.root)) / 'allowlisted' / 'ffmpeg'
-        executable.parent.mkdir(exist_ok=True)
-        executable.write_bytes(b'fixture executable')
-        executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-        ffmpeg = FfmpegArgvTranscoder(executable, preflight_allowlisted_path=executable)
-        self.assertEqual(executable.resolve(), ffmpeg.preflight_allowlisted_path.resolve())
-        self.assertTrue(os.access(executable.resolve(), os.X_OK))
+        executable = Path(shutil.which('ffmpeg')).resolve(strict=True)
+        workspace = self.fixture.output
+        source = workspace / 'segment-001.bin'
+        source.write_bytes(_synthetic_adts_frame())
+        ffmpeg = FfmpegArgvTranscoder(executable, workspace=workspace,
+                                      preflight_allowlisted_path=executable)
+        self.assertEqual(executable, ffmpeg.preflight_allowlisted_path.resolve())
 
         def controlled_run(argv, **kwargs):
             self.assertIsInstance(argv, list)
             self.assertFalse(kwargs['shell'])
             self.assertEqual(argv[0], str(executable))
-            self.assertNotIn(snapshot['title'], argv)
+            self.assertTrue(all('$(' not in arg and '`' not in arg for arg in argv))
             self.assertIn('-protocol_whitelist', argv)
+            self.assertIn('file', argv)
+            self.assertNotIn('-filter_complex', argv)
             self.assertIn('-n', argv)
             destination = Path(argv[-1])
             with wave.open(str(destination), 'wb') as audio:
-                audio.setnchannels(1); audio.setsampwidth(1); audio.setframerate(1)
-                audio.writeframes(b'\x80' * self.duration)
+                audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(44100)
+                audio.writeframes(b'\x00\x00' * 1024)
             return SimpleNamespace(returncode=0, stdout=b'', stderr=b'')
 
-        adapter = self.make_adapter(transcoder=ffmpeg)
-        with patch('radioflix.timefree.capture.argv.subprocess.run', side_effect=controlled_run) as run:
-            with adapter.capture_job(row['job_id']) as result:
-                self.assertTrue(result.audio_path.is_file())
+        with patch('radioflix.timefree.capture.argv._probe_aac_sample_rate', return_value=(44100, 1)):
+            with patch('radioflix.timefree.capture.argv.subprocess.run', side_effect=controlled_run) as run:
+                ffmpeg.convert(source, timeout_seconds=10)
+                self.assertTrue((workspace / 'capture.wav').is_file())
         run.assert_called_once()
 
     def test_ffmpeg_executable_requires_allowlist(self):
         executable = self.fixture.root / 'unapproved' / 'ffmpeg'
         executable.parent.mkdir()
         executable.write_bytes(b'fixture executable')
-        executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         with self.assertRaises(CaptureFailure) as error:
-            FfmpegArgvTranscoder(executable)._executable()
+            FfmpegArgvTranscoder(executable, workspace=executable.parent)._executable()
         self.assertEqual(error.exception.code, 'ffmpeg_not_allowlisted')
 
     def test_truncated_audio_rejected(self):

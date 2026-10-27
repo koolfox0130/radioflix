@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from radioflix.schemas.reservations import Broadcast, JST
 from radioflix.timefree.capture.models import AuthContext, PlaylistReference
@@ -35,14 +35,17 @@ DUMMY_TOKEN = 'TEST_ONLY_NOT_A_CREDENTIAL'
 MASTER = b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmedia/index.m3u8\n'
 MEDIA = b'#EXTM3U\n#EXTINF:1.0,fixture\nsegment-1.ts\n#EXT-X-ENDLIST\n'
 AUTH = HttpResponse(200, body=json.dumps({'auth_token': DUMMY_TOKEN, 'area_id': 'fixture-area'}).encode())
-TIMEFREE = HttpResponse(200, body=b'{"playlist_url":"https://cdn.radiko.jp/fixture/index.m3u8"}')
+TIMEFREE = HttpResponse(200, headers={'Content-Type': 'application/xml'}, body=(
+    b'<urls><url areafree="0" timefree="1">'
+    b'<playlist_create_url>https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/fixture/playlist.m3u8'
+    b'</playlist_create_url></url></urls>'))
 MASTER_RESPONSE = HttpResponse(200, body=MASTER)
 MEDIA_RESPONSE = HttpResponse(200, body=MEDIA)
 SEGMENT = HttpResponse(200, body=b'synthetic-segment-bytes')
 METADATA = SimpleNamespace(
     station='JOAK',
     start_at=datetime(2025, 1, 1, 12, 0, tzinfo=JST),
-    end_at=datetime(2025, 1, 1, 13, 0, tzinfo=JST),
+    end_at=datetime(2025, 1, 1, 12, 5, tzinfo=JST),
 )
 
 
@@ -154,15 +157,33 @@ class SafeSourceApiTests(unittest.TestCase):
         auth = self.auth_source(transport).authenticate(METADATA)
         playlist_source = TimefreePlaylistSource(transport)
         playlist = playlist_source.resolve(METADATA, auth)
-        self.assertEqual(playlist.url, 'https://cdn.radiko.jp/fixture/index.m3u8')
+        self.assertTrue(playlist.url.startswith(
+            'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/fixture/playlist.m3u8?'))
         with tempfile.TemporaryDirectory() as root:
             dest = Path(root) / 'media-input.ts'
             source = HlsMediaSource(transport, playlist_source, work_root=Path(root))
             self.assertEqual(source.download(playlist, auth, dest), dest)
             self.assertEqual(dest.read_bytes(), b'synthetic-segment-bytes')
             self.assertEqual(len(transport.requests), 5)
-            self.assertIn('station_id=JOAK', transport.requests[1].url)
-            self.assertIn('20250101120000', transport.requests[1].url)
+            self.assertEqual(transport.requests[1].method, 'GET')
+            self.assertEqual(transport.requests[1].url,
+                'https://radiko.jp/v3/station/stream/pc_html5/JOAK.xml')
+            playlist_request = transport.requests[2]
+            self.assertEqual(playlist_request.method, 'GET')
+            query = parse_qs(urlsplit(playlist_request.url).query)
+            self.assertEqual(query['station_id'], ['JOAK'])
+            self.assertEqual(query['start_at'], ['20250101120000'])
+            self.assertEqual(query['ft'], ['20250101120000'])
+            self.assertEqual(query['end_at'], ['20250101120500'])
+            self.assertEqual(query['to'], ['20250101120500'])
+            self.assertEqual(query['preroll'], ['0'])
+            self.assertEqual(query['seek'], ['20250101120000'])
+            self.assertEqual(query['l'], ['300'])
+            self.assertRegex(query['lsid'][0], r'^[a-f0-9]{32}$')
+            self.assertEqual(query['type'], ['b'])
+            self.assertEqual(playlist_request.headers['X-Radiko-AuthToken'], auth.credential)
+            self.assertEqual(playlist_request.headers['X-Radiko-AreaId'], auth.area_id)
+            self.assertTrue(all(request.method == 'GET' for request in transport.requests[1:]))
 
     def test_fake_source_api_flows_through_capture_worker_and_publisher(self):
         now = datetime.now(JST).replace(microsecond=0)
@@ -188,7 +209,7 @@ class SafeSourceApiTests(unittest.TestCase):
                 store.event(db, job, 'queued', now.isoformat())
             transport = FakeHttpTransport([
                 HttpResponse(200, body=b'{"auth_token":"SOURCE_FIXTURE_ONLY","area_id":"fixture"}'),
-                HttpResponse(200, body=b'{"playlist_url":"https://cdn.radiko.jp/fixture/index.m3u8"}'),
+                TIMEFREE,
                 HttpResponse(200, body=b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmedia.m3u8\n'),
                 HttpResponse(200, body=b'#EXTM3U\n#EXTINF:1,fixture\nsegment.ts\n#EXT-X-ENDLIST\n'),
                 HttpResponse(200, body=b'synthetic-media-segment'),
@@ -215,6 +236,128 @@ class SafeSourceApiTests(unittest.TestCase):
         self.assertEqual(error.exception.code, SourceCode.PLAYLIST_INVALID)
         self.assertEqual(transport.requests, [])
 
+    def test_stream_xml_selection_requires_exact_timefree_and_areafree(self):
+        body = (b'<urls><url areafree="0" timefree="0"><playlist_create_url>'
+                b'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/live.m3u8</playlist_create_url></url>'
+                b'<url areafree="1" timefree="1"><playlist_create_url>'
+                b'https://tf-c-rpaa-radiko.smartstream.ne.jp/tf/tf.m3u8</playlist_create_url></url>'
+                b'<url areafree="0" timefree="1"><playlist_create_url>'
+                b'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/tf.m3u8</playlist_create_url>'
+                b'</url></urls>')
+        transport = FakeHttpTransport([HttpResponse(200, body=body)])
+        result = TimefreePlaylistSource(transport).resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+        self.assertTrue(result.url.startswith(
+            'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/tf.m3u8?'))
+
+    @staticmethod
+    def stream_xml_candidates(*rows):
+        parts = [b'<urls>']
+        for areafree, timefree, url in rows:
+            parts.append(f'<url areafree="{areafree}" timefree="{timefree}">'.encode())
+            parts.append(b'<playlist_create_url>' + url.encode() + b'</playlist_create_url></url>')
+        parts.append(b'</urls>')
+        return b''.join(parts)
+
+    def test_first_approved_candidate_wins_in_xml_order(self):
+        safe = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/first.m3u8'
+        unknown = 'https://unlisted.example.invalid/tf/other.m3u8'
+        cases = (
+            ([(0, 1, safe)], safe),
+            ([(0, 1, safe), (0, 1, unknown)], safe),
+            ([(0, 1, unknown), (0, 1, safe)], safe),
+            ([(0, 1, safe), (0, 1, 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/second.m3u8')], safe),
+            ([(0, 1, safe), (0, 1, safe)], safe),
+        )
+        for rows, expected in cases:
+            with self.subTest(rows=len(rows)):
+                parser = TimefreePlaylistSource(FakeHttpTransport([
+                    HttpResponse(200, body=self.stream_xml_candidates(*rows))]))
+                result = parser.resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+                self.assertEqual(urlsplit(result.url).hostname, urlsplit(expected).hostname)
+                self.assertEqual(urlsplit(result.url).path, urlsplit(expected).path)
+                self.assertEqual([row['index'] for row in parser.candidate_diagnostics],
+                                 list(range(1, len(rows) + 1)))
+                self.assertEqual([row['approved'] for row in parser.candidate_diagnostics],
+                                 [urlsplit(url).hostname == 'tf-f-rpaa-radiko.smartstream.ne.jp'
+                                  for _, _, url in rows])
+                self.assertTrue(all('url' not in row for row in parser.candidate_diagnostics))
+
+    def test_unapproved_matching_candidates_fail_closed(self):
+        rows = (
+            'http://tf-f-rpaa-radiko.smartstream.ne.jp/tf/http.m3u8',
+            'https://127.0.0.1/tf/private.m3u8',
+            'https://user:pass@tf-f-rpaa-radiko.smartstream.ne.jp/tf/userinfo.m3u8',
+            'https://tf-f-rpaa-radiko.smartstream.ne.jp/other/path.m3u8',
+            'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/%2e%2e/outside.m3u8',
+            'not a valid url',
+            'https://unlisted.example.invalid/tf/unknown.m3u8',
+        )
+        parser = TimefreePlaylistSource(FakeHttpTransport([HttpResponse(200, body=
+            self.stream_xml_candidates(*[(0, 1, url) for url in rows]))]))
+        with self.assertRaises(SourceFailure):
+            parser.resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+        self.assertEqual(len(parser.candidate_diagnostics), len(rows))
+        self.assertFalse(any(row['approved'] for row in parser.candidate_diagnostics))
+
+    def test_duplicate_approved_host_is_deterministic(self):
+        first = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/one.m3u8'
+        second = 'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/two.m3u8'
+        parser = TimefreePlaylistSource(FakeHttpTransport([HttpResponse(200, body=
+            self.stream_xml_candidates((0, 1, first), (0, 1, second)))]))
+        result = parser.resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+        self.assertEqual(urlsplit(result.url).path, '/tf/one.m3u8')
+        self.assertEqual([row['hostname'] for row in parser.candidate_diagnostics],
+                         ['tf-f-rpaa-radiko.smartstream.ne.jp'] * 2)
+
+    def test_stream_xml_malformed_station_mismatch_no_timefree_or_areafree_mismatch(self):
+        invalid_xml = (
+            b'<urls>',
+            b'<urls station_id="JOKE"><url areafree="0" timefree="1"><playlist_create_url>'
+            b'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/a.m3u8</playlist_create_url></url></urls>',
+            b'<urls><url areafree="0" timefree="0"><playlist_create_url>'
+            b'https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/a.m3u8</playlist_create_url></url></urls>',
+            b'<urls><url areafree="1" timefree="1"><playlist_create_url>'
+            b'https://tf-c-rpaa-radiko.smartstream.ne.jp/tf/a.m3u8</playlist_create_url></url></urls>',
+        )
+        for body in invalid_xml:
+            with self.subTest(body=body[:24]), self.assertRaises(SourceFailure):
+                TimefreePlaylistSource(FakeHttpTransport([HttpResponse(200, body=body)])).resolve(
+                    METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+
+    def test_stream_xml_missing_or_malformed_candidate_rejected(self):
+        prefix = b'<urls><url areafree="0" timefree="1">'
+        suffix = b'</url></urls>'
+        bodies = (
+            prefix + b'<other>none</other>' + suffix,
+            prefix + b'<playlist_create_url>https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/a.m3u8'
+            b'</playlist_create_url><playlist_create_url>https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/b.m3u8'
+            b'</playlist_create_url>' + suffix,
+        )
+        for body in bodies:
+            with self.subTest(body=body[:32]), self.assertRaises(SourceFailure):
+                TimefreePlaylistSource(FakeHttpTransport([HttpResponse(200, body=body)])).resolve(
+                    METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+
+    def test_playlist_stream_xml_http_errors_timeout_and_get_only(self):
+        for status in (403, 404):
+            transport = FakeHttpTransport([HttpResponse(status)])
+            with self.subTest(status=status), self.assertRaises(SourceFailure):
+                TimefreePlaylistSource(transport).resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+            self.assertEqual(transport.requests[0].method, 'GET')
+        transport = FakeHttpTransport([TimeoutError()], policy=RetryPolicy(max_attempts=1))
+        with self.assertRaises(SourceFailure) as error:
+            TimefreePlaylistSource(transport).resolve(METADATA, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+        self.assertEqual(error.exception.code, SourceCode.HTTP_TIMEOUT)
+        self.assertEqual(transport.requests[0].method, 'GET')
+
+    def test_areafree_premium_mode_is_not_accepted_by_normal_auth_source(self):
+        metadata = SimpleNamespace(station='JOAK', start_at=METADATA.start_at,
+                                   end_at=METADATA.end_at, areafree=1)
+        transport = FakeHttpTransport([TIMEFREE])
+        with self.assertRaises(SourceFailure):
+            TimefreePlaylistSource(transport).resolve(metadata, AuthContext(Secret(DUMMY_TOKEN), 'JP13'))
+        self.assertEqual(transport.requests, [])
+
     def test_empty_playlist_rejected(self):
         with self.assertRaises(SourceFailure):
             TimefreePlaylistSource(FakeHttpTransport([])).parse_hls(b'#EXTM3U\n#EXT-X-ENDLIST\n',
@@ -236,8 +379,10 @@ class SafeSourceApiTests(unittest.TestCase):
             TimefreePlaylistSource(FakeHttpTransport([])).parse_hls(b'#EXTM3U\n' + b'a' * 300000,
                 'https://cdn.radiko.jp/fixture/i.m3u8')
 
-    def test_playlist_url_from_response_is_validated(self):
-        response = HttpResponse(200, body=b'{"playlist_url":"https://attacker.invalid/x.m3u8"}')
+    def test_playlist_url_from_stream_xml_is_validated(self):
+        response = HttpResponse(200, body=(b'<urls><url areafree="0" timefree="1">'
+            b'<playlist_create_url>https://attacker.invalid/tf/x.m3u8</playlist_create_url>'
+            b'</url></urls>'))
         with self.assertRaises(SourceFailure):
             TimefreePlaylistSource(FakeHttpTransport([response])).resolve(
                 METADATA, AuthContext(Secret(DUMMY_TOKEN), 'fixture-area'))

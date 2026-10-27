@@ -1,80 +1,66 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-24 21:03:38 JST
+2026-10-28 07:10:25 JST
 
 ## Current task
-Safely validate the Production HTTP and media path with a maximum of three live HLS segments; this run fetched one segment only.
+Resolve the live AAC sample-rate validator mismatch using the saved segment only, then complete isolated regressions.
 
 ## Current phase
-Bounded segment observation completed. Production transport/media primitives and fixture coverage are implemented, but capture remains disconnected and NotReady.
+The sample-rate mismatch is fixed; all isolated backend/frontend and static checks pass. Pre-commit review is complete.
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Confirmed start HEAD `90beddd1b4bf61c921969c0a32794b4cc900e2f0`, branch `main`, and preserved all existing dirty/untracked state. Initial tracked changes were the source transport/model exports/tests and the post-push latest log; unrelated `.codex/`, old history snapshots, and frontend Dockerfile backups remain untouched.
-- Confirmed the ordinary pc_html5 auth and in-area (`areafree=0`) CRK five-minute playlist/master/media-manifest path from the preceding authorized observation. The media manifest had three entries, no `ENDLIST`, encryption key, or init map.
-- Implemented `ProductionHttpTransport` using Python stdlib HTTPS, pinned public DNS addresses with hostname TLS validation, exact host allowlist, same-host redirect revalidation, bounded timeout/retry/response sizes, structured sanitized errors, and an explicit observation-only request budget. Default construction is still NotReady and does no DNS/socket work.
-- Added `ProductionMediaFetcher`, fixed to the observed Smartstream host and manifest directory, defaulting to one segment and enforcing a hard maximum of three. It only writes fixed filenames beneath a pre-existing work root, avoids overwrite, validates content type/basic container framing, and removes partial files on failure. It is not connected to worker/capture.
-- One permitted live segment request returned HTTP 200, `application/octet-stream`, 31,707 bytes, about 0.09 seconds; framing validated as AAC ADTS. The temporary test file was removed. No other segment was requested.
-- Updated source API, runtime, validation, and dev-log documentation with observed facts separated from implementation limits.
+- Start HEAD: `736c7b6e4951c611e23cda1b7a08a757619049d3`, branch `main`. Existing tracked differences and unrelated untracked files were retained; no reset/restore.
+- No background test/dev server was running at inspection. The isolated PHP test container was available.
+- Reused the dedicated test image with an explicit Python entrypoint, network none, read-only root, non-root UID, dropped capabilities, no-new-privileges; mounts were backend read-only, test dependencies/source fixtures read-only, and tmpfs only. The image's default entrypoint was tried once and failed closed on read-only filesystem before tests; it was stopped. The proper test entrypoint then ran tests only.
+- Backend discovery: **300 passed, 0 skipped**. First proper run exposed six PHP fixture subtests missing their expected tmpfs directory; after creating that disposable directory in tmpfs, the complete rerun passed.
+- The host Python TestClient attempt stalled due the local harness; no code change was made for it. The isolated Python 3.12/PHP container is the authoritative full run.
+- Saved live input used for local rerun: one AAC/ADTS segment, 31,707 bytes, HTTP content type previously observed as `application/octet-stream`. ADTS core=24,000 Hz, 118 frames, parsed duration 5.034667 s. Input ffprobe: AAC-LC, decoded rate=48,000 Hz, stereo, duration 4.894063 s.
+- Cause: expected rate previously came from ADTS core sampling-frequency index via `_adts_duration()`; validator correctly read WAV fmt=48,000 Hz and rejected expected=24,000. The sample-rate contract was using the wrong input rate representation (classification E); ADTS parser core-rate extraction was correct, ffmpeg had no resample option and output 48,000 Hz, WAV parser was correct, and this was a single segment (no duration/concat interaction).
+- Fix: bounded local ffprobe input before transcoding, allowlisted sibling executable, `shell=False`, file-only protocol, AAC/mono-or-stereo/rate consistency checks; output validator remains strict and uses decoded input sample rate. Preflight checks ffprobe version.
+- Saved-segment rerun: ffmpeg 7.1.1-Jellyfin exit 0; output WAV 966,734 bytes; ffprobe WAV/pcm_s16le/s16/48,000 Hz/stereo/5.034667 s. RIFF chunks `fmt `/`LIST`/`data`; declared and actual payload 966,656 bytes; block align 4; 241,664 frames. Internal diagnostic reason=None; validator PASS at expected=actual 48,000 Hz.
+- Synthetic matrix: 44.1/48 kHz, mono/stereo, 1/2/3 segment cases PASS, including explicit 24 kHz ADTS core→48 kHz decoder output case.
 
 ## In progress
-- Review and checkpoint the bounded transport/media implementation. No production activation or deploy is part of this checkpoint.
+- No test or diagnostic remains. The documented sample-rate fix and full isolated regression are ready for the conditional checkpoint commit/push. No further Radiko request is needed.
 
 ## Next actions
-1. Run/confirm final diff, secret-pattern scan, and current safety snapshot.
-2. Explicitly stage only the transport/media implementation, focused tests, and relevant docs/history; commit the bounded segment fetcher.
-3. Push `main` and verify HEAD equals the live `origin/main` ref.
-4. Keep ffmpeg/full-program capture, publisher, worker enablement, gates, and deployment stopped pending a separate safety transition.
+1. Stage only the reviewed Phase 4 capture/transcoder tests and relevant runtime/source/validation/dev-log files; preserve unrelated untracked files.
+2. Commit the sample-rate contract correction and related completed Phase 4 changes, then push only if the staged diff and remote checks remain as reviewed.
+3. Record final commit/push state in latest/history.
 
 ## Blockers / Issues
-- One segment proves bounded HTTP and AAC framing only. It does not establish full-program continuity, complete duration, transcoding, publication, or recording readiness.
-- The observation transport uses the OS resolver; connect/read and request budgets are bounded, but DNS resolver duration is not independently bounded in this implementation.
-- Segment fetching is not wired to the capture adapter. `ProductionHttpTransport.ready=false`, `ProductionMediaFetcher.ready=false`, `ProductionCaptureAdapter.ready=false`, and `bridge_approved=false` remain.
+- The first container attempt used the image's default rfriends entrypoint and its setup failed on read-only root; no production/native mount was present. The successful test container explicitly bypassed that entrypoint.
+- `compileall` initially attempted cache writes into the read-only backend bind mount; rerun directed bytecode cache to tmpfs and passed. One PHP syntax command first named a nonexistent file; it was corrected to the three actual PHP files, all of which passed.
+- The initial unapproved Playwright invocation could not start localhost and then could not find the browser at the default cache. Using the existing `/tmp` browser cache and approved localhost test execution passed all UI suites. Initial build sandbox could not bind Turbopack's local port; approved retry passed.
+- One-off observation wrapper threw before the original validator callback because its copied-WAV probe used an incorrect path. The retained WAV was independently inspected; the saved original segment was then transcoded through corrected production code and passed validation. All task-owned audio, probe script and build panic log were subsequently deleted; the isolated PHP test container was removed.
 
 ## Files changed
-- `backend/radioflix/timefree/capture/source/transport.py`: explicit, bounded observation-only pinned-TLS HTTPS transport.
-- `backend/radioflix/timefree/capture/source/models.py`: response size ceiling and redirect metadata.
-- `backend/radioflix/timefree/capture/source/production_media.py`: new 1–3 segment-only fetcher, workspace confinement, type/framing checks, cleanup.
-- `backend/radioflix/timefree/capture/source/__init__.py`: export bounded fetcher.
-- `backend/tests/test_timefree_sources.py`: transport and segment security/error/limit fixtures.
-- `docs/radioflix-timefree-source-api.md`: transport and one-segment evidence/limits.
-- `docs/radioflix-timefree-runtime.md`: runtime state and observation record.
-- `docs/radioflix-timefree-phase4-validation.md`: isolated test results.
-- `docs/dev-log/latest.md` and matching history snapshot.
+- Existing Phase 4 changes remain in capture adapter/transcoder/source modules, backend tests, and runtime/source/validation docs.
+- This turn updates expected sample-rate derivation in `backend/radioflix/timefree/capture/argv.py`, adds focused tests, and records the diagnosis in the three Phase 4 docs and this dev-log.
+- Unrelated `.codex/`, frontend Docker backups, and preexisting history files remain untouched/un-staged.
 
 ## Git state
-Branch `main`; start/current HEAD before this checkpoint `90beddd1b4bf61c921969c0a32794b4cc900e2f0`. This task's implementation/docs are uncommitted and intended for one explicit-file commit after final checks. Existing unrelated untracked `.codex/`, prior history files, and frontend Dockerfile backups are preserved and excluded. No reset/restore or broad staging.
+Branch `main`; HEAD `736c7b6e4951c611e23cda1b7a08a757619049d3`. No commit/push yet. Existing diffs and unrelated untracked files preserved.
 
 ## Tests
-- Source API tests: 52 PASS (FakeHttpTransport, no network).
-- Backend isolated full discovery: 278 PASS / 0 skipped; network none, read-only root, non-root, cap-drop ALL, no-new-privileges, dedicated test volumes.
-- Python compileall: PASS.
-- PHP syntax: 5 files PASS in isolated PHP container.
-- Schedule UI: 148 checks PASS (360/390/412/1280px).
-- Reservation UI: 24 scenarios PASS.
-- Playback/navigation UI: 21 checks PASS.
-- `npx tsc --noEmit`: PASS.
-- `npm run lint`: 0 errors, 5 existing warnings.
-- `npm run build`: PASS.
-- `git diff --check`: PASS after docs update.
-- Secret-pattern scan: PASS for credential/header patterns across all 10 changed files. A broader heuristic matched only two explicit synthetic fixture token assignments in the test file; no real credential was found. No match contents were emitted.
+- Backend full discovery in network-none Python 3.12/PHP isolated container: **300 PASS / 0 skipped**.
+- Timefree/capture/Source API/ffmpeg tests are included in that run; synthetic ffmpeg matrix PASS.
+- `compileall`: PASS using tmpfs pycache. PHP syntax: `worker.php`, `fixture-bindings.php`, and `rfriends_driver.php` PASS.
+- Schedule UI: 148 PASS, widths 360/390/412/1280. Reservation UI: 12 scenarios each at 360/1280 PASS. Playback/navigation: 21 PASS at 360px.
+- `npx tsc --noEmit`: PASS. `npm run lint`: 0 errors, 5 preexisting warnings. `npm run build`: PASS after approved rerun for local Turbopack bind restriction.
+- `git diff --check`: PASS after docs updates. Secret-pattern scan: 59 candidate files, 0 matches; values are never printed.
 
 ## Runtime / Safety
-- One authorized live request fetched one segment after normal auth and manifest resolution. No audio playback/analysis, ffmpeg, concatenation, publisher, full-program fetch, worker run/deploy, or recording occurred.
-- The sole segment file was deleted; no test segment remains in the repository or temp workspace.
-- `RFRIENDS_ENABLE_WRITES=0`; `RADIOFLIX_TIMEFREE_ENABLE_WRITES` unset/OFF. Neither gate was changed.
-- `ProductionHttpTransport.ready=false`; explicit observation mode was used only for the bounded one-segment diagnostic. `ProductionMediaFetcher.ready=false`; capture `ready=false`; `bridge_approved=false`.
-- `rfriends3` remained running; native rsv/dat/sh/at before/after fingerprints were unchanged; no native/normal recording path was written.
-- No production worker deploy/recreate, commit, or push has occurred yet for this checkpoint.
-- Credential/token/cookie/auth-header values and segment query URLs were not logged or saved.
+No worker deploy/restart/recreate, publisher, full-program capture, or native write. Production `RFRIENDS_ENABLE_WRITES=0`; Timefree gate is unset/OFF. Readiness and bridge approval remain false. The live diagnostic used one previously downloaded segment in `/tmp`; one short local ffmpeg conversion ran, with no recording or publisher call. The isolated test container had no native/recording mounts. Read-only DB recheck: active-like reservation, weekly, and recording-job counts 0; no `timefree_jobs` table. Production backend/frontend/gateway/`rfriends3` remained Up. The test/probe performed no native-path write; native fingerprints were not fully comparable to the prior log because recorded path/count methods differed, so no claim is made about unrelated scheduled `rfriends3` cron activity.
 
 ## Important decisions
-- An authorized one-segment diagnostic does not enable production capture. Default transport remains fail-closed and is not worker-wired.
-- Enforce a hard 1–3 segment maximum and default to one; no manifest polling, concat, or publisher.
-- Preserve all unrelated worktree changes and stage only reviewed paths.
+- Preserve strict WAV format, payload, RIFF bounds, block alignment, and exact expected sample rate validation. Correct the expected rate source to the local AAC decoder output rate rather than accepting arbitrary mismatches.
+- ADTS sampling-frequency index describes the AAC core rate. For the observed file, the decoder reports an effective 48 kHz output rate. All bounded inputs must have consistent decoded rates and valid relationship to their ADTS core rates.
+- No Radiko request, segment refetch, ffmpeg whole-program assembly, publisher, or production readiness change is part of the remaining work.
 
 ## Recovery instructions
-Continue from `90beddd1b4bf61c921969c0a32794b4cc900e2f0`; inspect the full diff, run final `git diff --check` and redacted secret scan, then stage explicit files only. If checks pass, create the requested bounded-fetcher checkpoint and push/verify `origin/main`. Keep both gates OFF and do not run ffmpeg, fetch more segments, publish, deploy, or record.
+Continue from the current `main` worktree at HEAD `736c7b6e4951c611e23cda1b7a08a757619049d3`. The saved segment/WAV, one-off probe script, panic log, and dedicated PHP test container have been cleaned up. Preserve existing diffs and unrelated untracked files; never reset/restore or use `git add -A`. Both gates remain OFF; `ready=false`, `bridge_approved=false`. No further network request is needed.
