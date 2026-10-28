@@ -80,16 +80,34 @@ class StationAreaSourceTests(unittest.TestCase):
         self.assertEqual((request.method, request.url),
                          ('GET', 'https://radiko.jp/v3/station/region/full.xml'))
 
-    def test_malformed_or_ambiguous_official_mapping_is_rejected(self):
-        for body in (
-            b'<region><stations><station><id>LFR</id><area_id>Tokyo</area_id></station></stations></region>',
-            b'<region><stations><station><id>LFR</id><area_id>JP13</area_id></station><station><id>LFR</id><area_id>JP13</area_id></station></stations></region>',
-            b'<!DOCTYPE region [<!ENTITY x "bad">]><region>&x;</region>',
-            b'<wrong/>',
-        ):
+    def test_malformed_or_ambiguous_station_is_unresolved(self):
+        body = (
+            b'<region><stations>'
+            b'<station><id>LFR</id><area_id>Tokyo</area_id></station>'
+            b'<station><id>CRK</id><area_id>JP28</area_id></station>'
+            b'<station><id>QRR</id><area_id>JP13</area_id></station>'
+            b'<station><id>QRR</id><area_id>JP13</area_id></station>'
+            b'<station><id>!invalid</id><area_id>JP13</area_id></station>'
+            b'</stations></region>'
+        )
+        catalog = StationAreaSource(FakeHttpTransport([HttpResponse(200, body=body)])).load_catalog()
+        mapping = catalog.area_by_station
+        self.assertEqual(mapping, {'CRK': 'JP28'})
+        self.assertEqual(catalog.station_ids, frozenset({'LFR', 'CRK', 'QRR'}))
+        self.assertEqual(select_normal_area_candidates(
+            [candidate('LFR'), candidate('QRR'), candidate('CRK')], mapping, 'JP28', NOW),
+            (candidate('CRK'),))
+
+    def test_invalid_xml_document_and_doctype_are_rejected(self):
+        for body in (b'<!DOCTYPE region [<!ENTITY x "bad">]><region>&x;</region>', b'<wrong/>'):
             with self.subTest(body_kind=len(body)):
                 with self.assertRaises(SourceFailure):
                     StationAreaSource(FakeHttpTransport([HttpResponse(200, body=body)])).load()
+
+    def test_only_malformed_station_rows_produce_no_mapping(self):
+        body = b'<region><station><id>LFR</id><area_id>JP999</area_id></station></region>'
+        with self.assertRaises(SourceFailure):
+            StationAreaSource(FakeHttpTransport([HttpResponse(200, body=body)])).load()
 
     def test_http_failure_is_rejected(self):
         with self.assertRaises(SourceFailure):

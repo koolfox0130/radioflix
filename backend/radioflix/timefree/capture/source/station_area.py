@@ -2,6 +2,7 @@
 
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 
 from radioflix.timefree.capture.source.errors import SourceCode, SourceFailure
 from radioflix.timefree.capture.source.models import HttpRequest, RequestTimeout, bounded_timeout
@@ -10,7 +11,7 @@ from radioflix.timefree.capture.source.transport import HttpTransport
 
 STATION_REGION_URL = 'https://radiko.jp/v3/station/region/full.xml'
 MAX_STATION_REGION_BYTES = 2 * 1024 * 1024
-_STATION_ID = re.compile(r'[A-Z0-9-]{2,24}')
+_STATION_ID = re.compile(r'[A-Z0-9_-]{1,24}')
 
 
 def valid_area_id(value: object) -> bool:
@@ -25,6 +26,9 @@ class StationAreaSource:
         self.timeout = timeout
 
     def load(self, *, timeout_seconds=15) -> dict[str, str]:
+        return dict(self.load_catalog(timeout_seconds=timeout_seconds).area_by_station)
+
+    def load_catalog(self, *, timeout_seconds=15) -> 'StationAreaCatalog':
         try:
             response = self.transport.request(HttpRequest(
                 'GET', STATION_REGION_URL,
@@ -48,6 +52,8 @@ class StationAreaSource:
             raise SourceFailure(SourceCode.INVALID_RESPONSE)
 
         mapping: dict[str, str] = {}
+        station_ids: set[str] = set()
+        ambiguous: set[str] = set()
         for node in root.iter():
             if node.tag.rsplit('}', 1)[-1] != 'station':
                 continue
@@ -57,10 +63,31 @@ class StationAreaSource:
                          if child.tag.rsplit('}', 1)[-1] == 'area_id' and child.text), None)
             if station is None and area is None:
                 continue
-            if (station is None or not _STATION_ID.fullmatch(station)
-                    or not valid_area_id(area) or station in mapping):
-                raise SourceFailure(SourceCode.INVALID_RESPONSE)
+            # Region metadata contains entries that are not usable for a
+            # normal-area decision. Keep those stations unresolved rather
+            # than discarding unrelated, well-formed official mappings.
+            if station is None or not _STATION_ID.fullmatch(station):
+                continue
+            station_ids.add(station)
+            if not valid_area_id(area):
+                mapping.pop(station, None)
+                ambiguous.add(station)
+                continue
+            if station in ambiguous:
+                continue
+            if station in mapping:
+                mapping.pop(station, None)
+                ambiguous.add(station)
+                continue
             mapping[station] = area
         if not mapping:
             raise SourceFailure(SourceCode.INVALID_RESPONSE)
-        return mapping
+        return StationAreaCatalog(mapping, frozenset(station_ids))
+
+
+@dataclass(frozen=True)
+class StationAreaCatalog:
+    """Official station IDs and only unambiguous, valid station-area pairs."""
+
+    area_by_station: dict[str, str]
+    station_ids: frozenset[str]
