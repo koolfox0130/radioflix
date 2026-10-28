@@ -18,6 +18,31 @@ class StartBlocked(ValueError):
         super().__init__(code)
 
 
+_RECORDING_NAME = re.compile(
+    r'(?:(?P<marker>\[SHT\]))?'
+    r'(?P<station>[A-Z0-9_-]+?)_(?P<title>.+)_'
+    r'(?P<day>\d{8})_(?P<start>\d{4})_(?P<end>\d{4})'
+    r'(?:_.*)?\.(?P<extension>m4a|mp3|aac|wav)'
+)
+
+
+def _parse_recording_name(name):
+    """Parse only canonical names and the documented rfriends [SHT] marker."""
+    if not isinstance(name, str) or '/' in name or '\\' in name or '\0' in name:
+        return None
+    match = _RECORDING_NAME.fullmatch(name)
+    if not match:
+        return None
+    try:
+        starts = datetime.strptime(match['day'] + match['start'], '%Y%m%d%H%M').replace(tzinfo=JST)
+        ends = datetime.strptime(match['day'] + match['end'], '%Y%m%d%H%M').replace(tzinfo=JST)
+    except ValueError:
+        return None
+    if ends <= starts:
+        ends += timedelta(days=1)
+    return match['station'], starts, ends
+
+
 class RecordingInventory:
     # Known rfriends names only. Ambiguous audio fails closed; mtime/title alone
     # never prove absence or completion. No mutation and no media subprocesses.
@@ -41,17 +66,10 @@ class RecordingInventory:
                         continue
                     if path.is_symlink():
                         raise StartBlocked('recordings_unknown')
-                    match = re.fullmatch(r'([A-Z0-9_-]+?)_.+_(\d{8})_(\d{4})_(\d{4})(?:_.*)?\.(?:m4a|mp3|aac|wav)', name)
-                    if not match:
+                    parsed = _parse_recording_name(name)
+                    if parsed is None:
                         raise StartBlocked('recordings_unknown')
-                    station, day, start, end = match.groups()
-                    try:
-                        starts = datetime.strptime(day + start, '%Y%m%d%H%M').replace(tzinfo=JST)
-                        ends = datetime.strptime(day + end, '%Y%m%d%H%M').replace(tzinfo=JST)
-                        if ends <= starts:
-                            ends += timedelta(days=1)
-                    except ValueError:
-                        raise StartBlocked('recordings_unknown') from None
+                    station, starts, ends = parsed
                     # Even incomplete/zero-byte matching files block a duplicate.
                     if station == broadcast.station and starts < broadcast.ends_at and broadcast.starts_at < ends:
                         raise StartBlocked('recording_exists')
