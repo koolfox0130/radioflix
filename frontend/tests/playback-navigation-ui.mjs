@@ -51,12 +51,17 @@ try {
   const tomorrow = new Date(Date.parse(`${today}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
   const program = { id: "p1", title: "Playback Probe", network: "Test", category: "その他", raw_name: "Playback Probe", thumbnail_url: "/programs/p1/thumbnail" };
   const episode = { filename: "probe.wav", title: "Playback Probe Episode.wav", size: wav.length, updated_at: Date.now() / 1000, thumbnail_url: "/programs/p1/episodes/probe.wav/thumbnail", audio_url: "/audio/p1/probe.wav" };
+  const timefreeProgram = { id: `tf~${"a".repeat(32)}`, title: "心に光を", station: "CRK", network: "ラジオ関西", category: "タイムフリー", source: "timefree" };
+  const timefreeFilename = `20261022_0600_0605_tf-${"b".repeat(64)}.wav`;
+  const timefreeEpisode = { episode_id: `timefree-${"b".repeat(64)}`, source: "timefree", filename: timefreeFilename, title: "心に光を", station: "CRK", start_at: "2026-10-22T06:00:00+09:00", end_at: "2026-10-22T06:05:00+09:00", duration: 299.989333, size: wav.length, updated_at: Date.now() / 1000, audio_url: `/audio/${timefreeProgram.id}/${timefreeFilename}` };
   const reply = (route, data, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(data) });
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.origin !== origin) return route.abort();
-    if (url.pathname === "/programs") return reply(route, [program]);
+    if (url.pathname === "/programs") return reply(route, [program, timefreeProgram]);
     if (url.pathname === "/programs/p1/episodes") return reply(route, [episode]);
+    if (url.pathname === `/programs/${timefreeProgram.id}/episodes`) return reply(route, [timefreeEpisode]);
+    if (url.pathname === timefreeEpisode.audio_url) return route.fulfill({ status: 200, contentType: "audio/wav", headers: { "Accept-Ranges": "bytes" }, body: wav });
     if (url.pathname === "/programs/p1/thumbnail" || url.pathname.endsWith("/thumbnail")) return route.fulfill({ status: 404, body: "" });
     if (url.pathname === "/audio/p1/probe.wav") return route.fulfill({ status: 200, contentType: "audio/wav", headers: { "Accept-Ranges": "bytes" }, body: wav });
     if (url.pathname === "/api/recommendations") return reply(route, []);
@@ -161,6 +166,48 @@ try {
   const afterPause = await page.locator("audio").evaluate(audio => audio.currentTime);
   assert(Math.abs(afterPause - pausedTime) < 0.2, "paused position must not advance or reset");
   assert.equal(documents, 1);
+  assert.deepEqual(errors, []);
+
+  await page.getByRole("navigation", { name: "メインナビゲーション" }).getByRole("link", { name: "録音一覧" }).click();
+  await page.waitForURL(url => url.pathname === "/");
+  await page.getByRole("button", { name: "← 戻る" }).click();
+  await page.getByRole("button", { name: /心に光を/ }).last().click();
+  await page.getByRole("heading", { name: "録音一覧" }).waitFor();
+  await page.getByRole("button", { name: /心に光を/ }).last().click();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector("audio");
+    return audio && audio.readyState >= 2 && !audio.paused && audio.currentTime > 2;
+  }, null, { timeout: 15000 });
+  const timefreePlayback = await page.locator("audio").evaluate(audio => ({
+    src: new URL(audio.currentSrc).pathname,
+    rate: audio.playbackRate,
+    same: audio === window.__radioAudio,
+  }));
+  assert(timefreePlayback.src.includes(timefreeEpisode.filename));
+  assert.equal(timefreePlayback.rate, 1.2);
+  assert.equal(timefreePlayback.same, true, "timefree audio must use the existing persistent player");
+  const timefreePlaybackState = await page.evaluate(({ programId, filename }) => ({
+    saved: Boolean(localStorage.getItem(`radioflix-position:${programId}:${filename}`)),
+    mediaTitle: navigator.mediaSession?.metadata?.title,
+    playbackState: navigator.mediaSession?.playbackState,
+  }), { programId: timefreeProgram.id, filename: timefreeEpisode.filename });
+  assert.equal(timefreePlaybackState.saved, true, "timefree episode must use the existing stable read/progress key");
+  if (timefreePlaybackState.mediaTitle !== undefined) {
+    assert(timefreePlaybackState.mediaTitle.includes("心に光を"));
+    assert.equal(timefreePlaybackState.playbackState, "playing");
+  }
+  assertCount.count += 3;
+  await page.locator('button[title="再生速度を切り替え"]').click();
+  await page.getByRole("button", { name: "1.0x" }).waitFor();
+  await page.locator('button[title="再生速度を切り替え"]').click();
+  await page.getByRole("button", { name: "1.2x" }).waitFor();
+  await page.getByRole("button", { name: "30↪" }).click();
+  await page.waitForFunction(() => document.querySelector("audio")?.currentTime >= 30);
+  const timefreeAfterForward = await page.locator("audio").evaluate(audio => audio.currentTime);
+  await page.getByRole("button", { name: "↩15" }).click();
+  await page.waitForFunction(before => document.querySelector("audio").currentTime < before - 14, timefreeAfterForward);
+  await checkPlayback("timefree seek後の共通player維持");
+  assertCount.count += 1;
   assert.deepEqual(errors, []);
   console.log(`PASS playback/navigation ${assertCount.count} checks at 360px`);
   await context.close();

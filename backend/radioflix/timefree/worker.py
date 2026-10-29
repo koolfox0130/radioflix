@@ -203,8 +203,12 @@ def completed_assets(store, root, *, include_fixture=False):
             if manifest['relative_path'] != row['output_path'] or manifest['sha256'] != row['output_sha256'] or manifest['size'] != row['output_size']:
                 continue
             result.append({'asset_id': row['job_id'], 'source': 'radioflix-timefree',
+                           'broadcast_episode_id': row['broadcast_episode_id'],
+                           'station': row['station'], 'title': row['title'],
+                           'start_at': row['start_at'], 'end_at': row['end_at'],
                            'broadcast': row['broadcast'], 'relative_path': row['output_path'],
-                           'duration': row['duration'], 'size': row['output_size']})
+                           'duration': row['duration'], 'size': row['output_size'],
+                           'completed_at': row['completed_at']})
         except (OSError, ValueError, TypeError, KeyError, EOFError, wave.Error):
             continue
     return result

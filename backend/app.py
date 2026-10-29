@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 from radioflix.services.program_service import ProgramService
+from radioflix.services.recording_catalog import RecordingCatalog
 from radioflix.services.recommendation_service import RecommendationService
 from radioflix.services.ai_service import AIService
 from radioflix.adapters.rfriends import RfriendsAdapter
@@ -149,6 +150,8 @@ timefree_service = TimefreeService(TimefreeStore(reservation_service.store.path)
     output_root='/timefree' if timefree_socket else None)
 schedule_service.timefree = timefree_service
 app.include_router(timefree_router(timefree_service))
+recording_catalog = RecordingCatalog(program_service, timefree_service.store,
+    '/timefree' if timefree_socket else None)
 
 RECORDING_DATETIME_PATTERN = re.compile(
     r"_(?P<date>\d{8})_(?P<start>\d{4})_(?P<end>\d{4})(?:_|\.|$)"
@@ -304,6 +307,10 @@ def get_embedded_artwork(audio_file: Path):
 
 
 def get_episode_files(program_id: str):
+    timefree_episodes = recording_catalog.episodes(program_id)
+    if timefree_episodes is not None:
+        return timefree_episodes
+
     folder = program_service.get_program_folder(program_id)
 
     if not folder:
@@ -324,6 +331,7 @@ def get_episode_files(program_id: str):
         episodes.append(
             {
                 "filename": file.name,
+                "source": "normal",
                 "title": file.stem,
                 "size": stat.st_size,
                 "updated_at": stat.st_mtime,
@@ -351,7 +359,7 @@ def root():
 @app.get("/programs")
 @app.get("/api/programs")
 def programs():
-    recorded_programs = program_service.get_recorded_programs()
+    recorded_programs = recording_catalog.get_recorded_programs()
 
     return [
         {
@@ -410,7 +418,7 @@ def recommendation_api():
 @app.get("/programs/{program_id}")
 @app.get("/api/programs/{program_id}")
 def program_detail(program_id: str):
-    program = program_service.find_program(program_id)
+    program = recording_catalog.find_program(program_id)
 
     if not program:
         program = recommendation_service.find_recommendation(program_id)
@@ -536,6 +544,17 @@ def episode_thumbnail(program_id: str, filename: str):
 @app.get("/audio/{program_id}/{filename:path}")
 @app.get("/api/audio/{program_id}/{filename:path}")
 def audio_file(program_id: str, filename: str):
+    if recording_catalog.is_timefree_program_id(program_id):
+        resolved_timefree = recording_catalog.audio_path(program_id, filename)
+        if not resolved_timefree:
+            raise HTTPException(status_code=404, detail="Audio file not found")
+        return FileResponse(
+            resolved_timefree,
+            media_type="audio/wav",
+            filename=filename,
+            content_disposition_type="inline",
+        )
+
     folder = program_service.get_program_folder(program_id)
 
     if not folder:
