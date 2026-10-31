@@ -400,6 +400,29 @@ Before bind, the worker refuses symlink, regular-file, foreign-owner, or active-
 
 `docker-compose.timefree-disabled-test.yml` uses a separate project, fixture DB/publish/native roots under `/tmp`, `network_mode: none`, read-only rootfs and source/data mounts, non-root worker, `cap_drop: ALL`, `no-new-privileges`, no ports, and no Docker socket. Only the dedicated UDS volume is writable by the worker. This topology is for isolated validation; it does not reference production data.
 
-Future disabled deployment order (not executed): (1) snapshot HEAD/config, container IDs/restart counts/mounts, gates, DB/recording/native/at fingerprints and active jobs; (2) provision the dedicated publish root only after `/volume1` is writable and checks pass; (3) prepare the named socket volume from the image's 10001:20000, 0770 socket directory; (4) render/inspect Compose config; (5) recreate backend only to add the RO UDS volume, group 20000, socket setting, and RO `/timefree` catalog mount; existing image, ports, networks, DB, secret, and ordinary recording mounts stay fixed; (6) backend health/API smoke; (7) start worker using disabled overlay only; (8) verify UDS owner/mode and backend connectivity; (9) health/status and `writes_disabled`; (10) verify Radiko/network 0 and DB/root/native fingerprints unchanged; (11) worker-only restart test; (12) existing frontend/API/audio smoke. Abort if another existing service would be recreated or any gate/readiness changes.
+The previous deployment order was attempted on 2026-10-31 and rolled back: it omitted an explicit backend image build, so `up -d --no-deps backend` reused a stale local `radioflix-backend` image. The worker booted disabled, but backend-to-worker integration failed because that image lacked `radioflix.timefree` and the Timefree API routes. No recording or data mutation occurred. The corrected deployment order is documented below; never use `up` alone to refresh backend code.
 
-Rollback: stop/remove only the Timefree worker; render the saved previous Compose file set; recreate backend from its previous image/config with the UDS volume, socket environment, group addition, and `/timefree` mount removed; check backend health/API/audio, then frontend behavior. Do not delete DB, socket volume data, or publish-root data as rollback. This plan is documentation only and was not executed.
+Rollback: stop/remove only the Timefree worker; render the saved previous Compose file set; recreate backend from its previous image/config with the UDS volume, socket environment, group addition, and `/timefree` mount removed; check backend health/API/audio, then frontend behavior. Do not delete DB, socket volume data, or publish-root data as rollback. This procedure was exercised on 2026-10-31: backend was restored to the original Compose file set and image ID `sha256:b2eb892390e2f680cc0d02ee1e6ccb1c15a249a4569be74bb18ea9e774e0ba09`; frontend/gateway/rfriends3 were untouched. Keep that image available for rollback.
+
+### Backend image provenance and stale-image guard
+
+The live Compose labels identified project `radioflix` and files `docker-compose.yml` + `docker-compose.rfriends.yml`. The backend service has build context `./backend`, Dockerfile `Dockerfile`, no target, and no build args in the old configuration. The Dockerfile copies both `app.py` and the whole `radioflix` package. No `.dockerignore` exists in the backend context, so Phase 4 files were not excluded. The deployed image `radioflix-backend` was created 2026-10-06; repository `backend/app.py` and image `/app/app.py` had different SHA-256 values, and the image lacked `/app/radioflix/timefree` and `/app/radioflix/api/timefree.py`. The primary cause was deployment command omission: Compose `up` does not build an existing image unless `--build` is requested. Build cache was not the cause because no build ran.
+
+The backend image now carries OCI label `org.opencontainers.image.revision`; `RADIOFLIX_GIT_SHA` is a build argument. Compose explicitly names the backend image via `RADIOFLIX_BACKEND_IMAGE` (default `radioflix-backend`) and passes the SHA build arg. For deployment, use an immutable commit-tagged image and explicitly build before any recreate:
+
+```sh
+SHA=$(git rev-parse HEAD)
+test -z "$(git status --porcelain -- backend/ docker-compose.yml docker-compose.rfriends.yml docker-compose.timefree-disabled.yml)"
+export RADIOFLIX_GIT_SHA="$SHA"
+export RADIOFLIX_BACKEND_IMAGE="radioflix-backend:$SHA"
+docker compose -p radioflix -f docker-compose.yml -f docker-compose.rfriends.yml -f docker-compose.timefree-disabled.yml config --format json
+docker compose -p radioflix -f docker-compose.yml -f docker-compose.rfriends.yml -f docker-compose.timefree-disabled.yml build backend
+test "$(docker image inspect "$RADIOFLIX_BACKEND_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$SHA"
+docker run --rm --pull never --network none --read-only --cap-drop ALL \
+  --entrypoint python "$RADIOFLIX_BACKEND_IMAGE" -c \
+  'import app; from fastapi.openapi.utils import get_openapi; from radioflix.timefree.transport import WorkerClient; paths=get_openapi(title="check",version="1",routes=app.app.routes)["paths"]; assert "/api/timefree/jobs" in paths; assert WorkerClient; print("phase4_image_ok")'
+```
+
+Before `up`, verify the rendered backend image equals `radioflix-backend:$SHA`, the revision label matches, and package/route smoke prints `phase4_image_ok`. Review backend ports/networks/DB/recording/secrets mounts and disabled gates in rendered config. Then use the explicitly reviewed backend-only `up -d --no-deps backend` command. Do not use `up --build` against a multi-service project because it may build unrelated services. Keep the previous production image ID/tag for rollback; never remove it as part of deployment.
+
+For isolated validation, build a separate tag such as `radioflix-backend:phase4-validation-<shortsha>` from the same `backend/` context and Dockerfile with `RADIOFLIX_GIT_SHA=<fullsha>`. Run package/import/OpenAPI checks and the disabled fixture backend↔worker UDS test with network none, fixture DB/root, backend socket RO and worker socket RW. The production tag and containers must remain untouched.

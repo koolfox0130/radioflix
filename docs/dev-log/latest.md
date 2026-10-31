@@ -1,93 +1,71 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-31 15:36:46 JST
+2026-11-01 00:10:33 JST
 
 ## Current task
-Design and validate a gate-OFF Timefree Worker deployment architecture without changing production containers or data.
+Diagnose and prevent stale production backend images from omitting the Phase 4 Timefree API.
 
 ## Current phase
-Disabled read-only boot mode and isolated deployment topology validation. Production deployment was not attempted.
+Isolated validation image, fixture worker socket E2E, and requested regression completed. No production deployment was attempted in this task.
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Re-read `AGENTS.md`, this progress log, Phase 4 runtime/validation docs, current Git state, and the actual active Compose definitions.
-- Start HEAD/origin/main: `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed`; branch `main`.
-- Confirmed active production Compose is `docker-compose.yml` + `docker-compose.rfriends.yml`; services are backend, frontend, and rfriends-gateway. No Timefree worker is deployed.
-- Read-only production inspection confirmed backend `295f0e2a9096…`, frontend `5480a0de5bfb…`, gateway `33d43c8efecb…`, and rfriends3 `e346364f5944…` were running with restart count 0. Backend `RFRIENDS_ENABLE_WRITES=0`; Timefree write gate unset/OFF. No production service was changed.
-- Found `/data` is an existing shared named volume but cannot safely serve as a worker-writable socket-only mount: worker RW would also grant DB write; worker RO cannot create the socket. Existing recording/native mounts are RO; `/run` and `/tmp` are container-local. Dedicated UDS volume is the safe design and requires backend recreation/configuration in a future authorized deployment.
-- Added explicit disabled boot behavior: Timefree store transaction refuses before path creation/SQLite open; worker skips reconcile/run; controller startup/tick skip mutation; dispatch/cancel reject while gates are OFF; disabled worker uses a read-only store and filesystem mounts.
-- Added fixed UDS lifecycle checks: socket directory owner/group/mode 10001:20000/0770, socket 0660, no permission broadening, owned stale socket cleanup with connect and inode recheck, refusal of foreign/active/regular/symlink paths, and inode-safe cleanup.
-- Backend mounts the shared socket volume read-only and joins group 20000; isolated test proved the backend can connect over that RO mount.
-- Added disabled production candidate, separate future enabled override, and network-none isolated Compose test. Config render verified disabled worker has no public ports, Docker socket, or network; DB/publish/native source mounts are RO and only its UDS volume is RW.
-- The future enabled override is separate and undeployed. It sets `RFRIENDS_ENABLE_WRITES=1` on the backend/gateway as well as the Timefree gate, so it also enables native reservation writes and needs separate review.
-- Read-only host stat found the proposed production Timefree publish bind source `/volume1/@home/kool-fox/radiko_public/radioflix-timefree` is missing. It was not created. Production deploy is blocked until that root is separately provisioned/reviewed.
-- Isolated test topology used only `/tmp/radioflix-timefree-disabled-test` fixtures, `network_mode: none`, read-only root/data/source mounts, non-root worker, `cap_drop: ALL`, `no-new-privileges`, and no ports/Docker socket.
-- Worker healthy and running, socket smoke passed (`0660`, owner 10001:20000); dispatch returned `writes_disabled`. Three worker restarts, backend restart-equivalent, and owned stale-socket recovery all passed against the isolated project. Fixture DB/root inode, size, mtime, hash, SQLite schema, and file count remained unchanged. Isolated test containers/socket volume were removed after validation.
+- Start HEAD and `origin/main`: `766deeac27bca03bfd5edf5fc66e8ffa7bd79043`. `git ls-remote origin refs/heads/main` was subsequently verified successfully and returned the same SHA. No Git history rewrite occurred.
+- Production rollback state is healthy and unchanged during this task: backend container `acf059cb70a3` uses the retained rollback image `sha256:b2eb892390e2f680cc0d02ee1e6ccb1c15a249a4569be74bb18ea9e774e0ba09`; frontend `5480a0de5bfb`, gateway `33d43c8efecb`, and rfriends3 `e346364f5944` remain running with restart count 0. No Timefree worker container is running. Backend GET `/api/programs` returned 200. `RFRIENDS_ENABLE_WRITES=0`; Timefree gate is unset/OFF.
+- Root cause: prior production `docker compose up -d --no-deps backend` did not build. Effective Compose uses build context `./backend` and `Dockerfile`; Dockerfile copies `app.py` and the full `radioflix` package; no prior `.dockerignore` excluded the Timefree code. The Oct 6 production image had a different `app.py` hash and lacked `/app/radioflix/timefree`, the Timefree API module, and API routes. This is deployment-command omission/stale tag reuse (F, with D as consequence), not context, COPY, ignore, target, or cache failure.
+- Added explicit image selection/build declaration to `docker-compose.yml`, `RADIOFLIX_GIT_SHA` build arg and OCI revision label in `backend/Dockerfile`, and `backend/.dockerignore` for test/cache/local data/env files. Runtime docs now require immutable commit-tagged build, label/package/OpenAPI verification, fixture UDS check, and previous-image retention. Validation docs record the incident and correction.
+- Built isolated image `radioflix-backend:phase4-validation-766deeac`, ID `sha256:1a1bb7a7b44cdab28117e37745293c7ba1ca38286080206fd30ac3bd69989a95`, revision label equals the starting HEAD. It contains Timefree package/worker client; app import and `/api/timefree/jobs` OpenAPI route checks passed.
+- Isolated network-none Compose E2E passed: backend socket RO, worker socket RW, fixture-only DB and roots, both gates 0, no public ports. Backend reached worker health/status; dispatch was blocked with `writes_disabled`. Fixture DB and publish-root fingerprints stayed unchanged. No production service/container/volume was used for this E2E.
+- Backend full discovery: 398 PASS / 0 skipped using Python 3.12 compatible preexisting wheels, PHP CLI, portable local ffmpeg/ffprobe, network none, read-only root and non-root. Initial retries exposed test-environment issues (Python ABI mismatch, missing tmp dirs, slow system ffprobe); they were corrected only in temporary test setup, with no source/timeout relaxation. Focused ffmpeg suite: 14 PASS.
+- Frontend: schedule UI 148 PASS using Playwright 1.51.1/Chromium 134; reservation UI scenarios passed at 360px and 1280px; playback/navigation 26 PASS. TypeScript PASS. Lint: 0 errors, 5 existing warnings. Production build PASS after rerun outside the sandbox due Turbopack child-process bind restriction.
+- `git diff --check` PASS. Secret-pattern scan on the intended changed files: 0 matches.
 
 ## In progress
-- None. Architecture and isolated validation are complete; production path provisioning and backend recreation remain future, separately authorized work.
+- Review the focused change list, make one checkpoint commit, then attempt `git push origin main` and verify the remote if network access permits. No production deploy/recreate is authorized or planned.
 
 ## Next actions
-1. Review and commit only the gate-OFF architecture/test/docs files listed below; do not stage the pre-existing `docs/radioflix-timefree-source-api.md` change or unrelated untracked files.
-2. Push the architecture checkpoint and verify `HEAD == origin/main`.
-3. In a separately authorized task, provision the dedicated production publish root with reviewed ownership/permissions, then recreate backend only to attach the RO UDS volume/config and run the disabled worker deployment test. Do not enable capture.
-4. Keep production capture blocked until the source bridge is ready/approved and enablement has separate review.
+1. Stage only `backend/Dockerfile`, `backend/.dockerignore`, `docker-compose.yml`, `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`, and `docs/dev-log/latest.md` plus this task's history snapshot.
+2. Commit the stale-image prevention checkpoint after final diff review.
+3. Attempt push to origin/main; verify HEAD and actual remote if GitHub resolves. Preserve all unrelated source-api edits, untracked history, `.codex/`, and frontend backup files.
+4. Stop before any production backend recreate, worker start, gate change, Radiko connection, or recording.
 
 ## Blockers / Issues
-- Current backend lacks a Timefree socket mount/configuration, and no safe existing path gives the worker a writable socket directory while preserving DB read-only. Backend recreation is required for future backend/worker communication.
-- The proposed production publish-root bind source is missing; `create_host_path: false` deliberately prevents accidental directory creation.
-- Capture remains `ready=false` / `bridge_approved=false`. No production Timefree worker deployment or recording is authorized by this validation.
+- The first remote lookup failed DNS; a later explicit retry succeeded and confirmed actual remote main equals the starting HEAD. Push remains to be attempted after checkpoint commit.
+- Production was intentionally not deployed. This corrects provenance and validation procedures only.
 
 ## Files changed
-- `backend/radioflix/timefree/store.py`: strict read-only transaction mode.
-- `backend/radioflix/timefree/worker.py`: disabled read-only no-op reconcile/run path.
-- `backend/radioflix/timefree/control.py`: explicit disabled boot, health/status, dispatch gate, bounded UDS setup/cleanup.
-- `backend/radioflix/timefree/service.py`: cancel checks gates before DB access/mutation.
-- `backend/app.py`: backend Timefree store is read-only while gates are off.
-- `backend/Dockerfile`: seeds restricted shared socket directory owner/group/mode.
-- `backend/radioflix/timefree/healthcheck.py`: UDS disabled-state health probe.
-- `backend/tests/test_timefree_runtime.py`, `backend/tests/timefree_disabled_smoke.py`: read-only and isolated UDS coverage.
-- `docker-compose.timefree.yml`, `docker-compose.timefree-disabled-test.yml`, `docker-compose.timefree-enabled.yml`: disabled/isolated/future-enabled layouts.
-- `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`: architecture, mount matrix, socket, recreate plan, and missing-path blocker.
-- Existing modified `docs/radioflix-timefree-source-api.md`, unrelated history, `.codex/`, and frontend Dockerfile backups are preserved and excluded from this task's stage set.
+- `backend/Dockerfile`: OCI revision label/build arg.
+- `backend/.dockerignore`: narrow build context exclusions.
+- `docker-compose.yml`: explicit selectable backend image and build SHA arg.
+- `docs/radioflix-timefree-runtime.md`: stale-image incident, image verification/build/rollback procedure.
+- `docs/radioflix-timefree-phase4-validation.md`: incident and isolated image/UDS results.
+- `docs/dev-log/latest.md`: current task and verification record.
+- Existing `docs/radioflix-timefree-source-api.md`, `.codex/`, prior untracked history, and frontend backup Dockerfiles are pre-existing unrelated changes and remain untouched.
 
 ## Git state
-- Branch `main`; HEAD and `origin/main` remain `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed` before checkpoint.
-- No commit/push yet; explicit file-by-file staging will follow final checks.
-- Existing unrelated modified/untracked files are preserved; no reset/restore/add-all used.
+- Branch `main`, HEAD `766deeac27bca03bfd5edf5fc66e8ffa7bd79043`; origin tracking ref is same. No commit/push yet. Actual remote lookup failed DNS.
+- Intended changes listed above. All unrelated modified/untracked content is preserved. No add-all/reset/restore.
 
 ## Tests
-- Backend full discovery in a Python 3.14 / PHP / ffmpeg test-only image: **343 PASS, 0 skipped**. First run had one synthetic ffprobe timeout; that test passed standalone, then full discovery passed on rerun without changing timeout/assertions.
-- Focused read-only boot/runtime tests: PASS.
-- Isolated Compose: network none, backend+worker started; backend RO socket connection, health/status, `writes_disabled` negative dispatch, worker restart ×3, backend restart, stale-socket recovery: PASS.
-- Test DB and publish fixture hashes/inodes/size/mtime/schema/count unchanged: PASS.
-- Python syntax compile: 74 files PASS. PHP syntax: 3 files PASS.
-- Frontend schedule UI: 148 PASS; reservation UI: 24 scenarios PASS; playback/navigation: 26 PASS.
-- `npx tsc --noEmit`: PASS.
-- `npm run lint`: 0 errors, 5 warnings (existing warnings).
-- `npm run build`: PASS.
-- Disabled and enabled production Compose config rendering: PASS; no production `up`, `build`, restart, or recreate.
-- `git diff --check`: PASS. Secret-pattern scan: PASS (17 changed/new files scanned; no credential-pattern findings).
-- Test worker runtime had `network_mode:none`; no Radiko request, segment, ffmpeg capture, job, publish, or production DB access occurred. The temporary test image build fetched system packages from Debian repositories only.
+- Backend: 398 PASS / 0 skipped; focused ffmpeg: 14 PASS.
+- Validation image: import/startup and Timefree OpenAPI route PASS; backend↔fixture-worker Unix socket health/status PASS; disabled dispatch rejected.
+- Frontend: schedule 148 PASS; reservations scenarios PASS at 360px and 1280px; playback/navigation 26 PASS; `npx tsc --noEmit` PASS; `npm run lint` 0 errors / 5 warnings; `npm run build` PASS.
+- `git diff --check` PASS; changed-file secret-pattern scan PASS (0 matches).
+- The first test attempts failed only due mismatched Python wheel ABI, missing temporary directories, outdated slow ffprobe and Playwright/browser test environment. Corrected isolated reruns passed. No test condition or production timeout was relaxed.
 
 ## Runtime / Safety
-- `RFRIENDS_ENABLE_WRITES=0` in live backend; Timefree write gate unset/OFF. No gate changed.
-- Source capture `ready=false`, `bridge_approved=false` (production bootstrap remains NotReady).
-- No production Timefree job, Radiko request, segment fetch, capture ffmpeg, publish, DB/root write, or worker deployment.
-- No production backend/frontend/gateway/rfriends3 restart/recreate. Production container identities/restart counts were inspected read-only and remained the same as the starting snapshot.
-- No native dat/sh/at or rfriends3 operation/change. Isolated test mounted only fixture native paths RO.
-- Disabled test worker process was `10001:20000`, UDS only, no public TCP/Docker socket; DB/publish/native sources RO.
-- Production publish root is currently missing, so deployment is not ready even with both gates OFF.
+- Production backend image remains old rollback image; no container was built/recreated/started/restarted in this task. Frontend, gateway and rfriends3 unchanged. Worker absent.
+- Both gates OFF (`RFRIENDS_ENABLE_WRITES=0`, Timefree OFF/unset). `ready=false` / `bridge_approved=false` remain as fail-closed configuration; no capture path was invoked.
+- No Radiko DNS/auth/HTTP/HLS, segment fetch, ffmpeg recording, publisher, DB/root/native write, or rfriends3/native change occurred. Production backend GET smoke was read-only.
+- Validation image/build and fixture Compose used test-only execution. Previous production backend image is retained for rollback.
 
 ## Important decisions
-- Reuse of existing `/data` for a socket is rejected: file-level RO and socket RW cannot be separated safely on the current broad volume mount.
-- Use a dedicated named UDS volume, worker RW and backend RO, group 20000, socket 0660; this requires backend recreation.
-- Disabled boot is enforced both in code and by read-only worker mounts. Gate OFF means no schema migration/reconcile/staging/publish/network/ffmpeg path.
-- Do not deploy the enabled override; its shared `RFRIENDS_ENABLE_WRITES` setting also enables gateway/native reservation writes.
-- Do not create the missing production Timefree path during this task.
+- `docker compose up` alone is insufficient for a changed backend source tree. Build and prove an immutable SHA-tagged image before any future recreate.
+- This work does not authorize deployment. Future disabled worker deployment remains a separate operation and capture remains NotReady / not approved.
 
 ## Recovery instructions
-Resume on branch `main` at `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed` plus this worktree diff. Preserve the pre-existing `docs/radioflix-timefree-source-api.md` diff, `.codex/`, all pre-existing untracked history, and frontend Dockerfile backups. Run the final secret scan and review the explicit stage set; commit/push only the current gate-OFF architecture. Production backend recreation, worker deployment, publish-root creation, and gate changes require a separate authorized task.
+- Resume from the focused unstaged changes listed above. Do not include the existing `docs/radioflix-timefree-source-api.md` change or unrelated untracked files.
+- Before any future deployment, explicitly build the backend with `RADIOFLIX_GIT_SHA`, inspect its OCI revision label and Timefree package/OpenAPI routes, render the disabled Compose set, then follow the reviewed deployment procedure. Keep the old image available.

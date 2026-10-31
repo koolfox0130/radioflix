@@ -1,6 +1,11 @@
 services:
   backend:
-    build: ./backend
+    image: ${RADIOFLIX_BACKEND_IMAGE:-radioflix-backend}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        RADIOFLIX_GIT_SHA: ${RADIOFLIX_GIT_SHA:-unknown}
     container_name: radioflix-backend
     restart: unless-stopped
     environment:

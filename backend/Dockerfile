@@ -1,5 +1,8 @@
 FROM python:3.14-slim
 
+ARG RADIOFLIX_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${RADIOFLIX_GIT_SHA}"
+
 WORKDIR /app
 
 # The dedicated Timefree worker runs as 10001:20000. A fresh shared socket
