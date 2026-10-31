@@ -16,6 +16,7 @@ from radioflix.adapters.rfriends import RfriendsAdapter
 from radioflix.api.reservations import reservation_router
 from radioflix.database.reservations import ReservationStore
 from radioflix.services.reservation_service import ReservationService
+from radioflix.services.reservation_service import reservation_writes_enabled
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException
@@ -126,7 +127,7 @@ reservation_service = ReservationService(
     ReservationStore(os.getenv("RADIOFLIX_DB_PATH", str(Path(__file__).parent / "data/radioflix.sqlite3"))),
     RfriendsAdapter(),
     programs=program_service,
-    writes_enabled=os.getenv("RFRIENDS_ENABLE_WRITES") == "1",
+    writes_enabled=reservation_writes_enabled(),
 )
 from radioflix.adapters.schedule import ScheduleAdapter
 from radioflix.api.schedule import schedule_router
@@ -140,13 +141,13 @@ app.include_router(schedule_router(schedule_service))
 app.include_router(reservation_router(reservation_service, program_service))
 
 from radioflix.timefree.store import TimefreeStore
-from radioflix.timefree.service import TimefreeService, live_gate
+from radioflix.timefree.service import TimefreeService, timefree_gate
 from radioflix.timefree.transport import WorkerClient
 from radioflix.api.timefree import timefree_router
 
 timefree_socket = os.getenv('RADIOFLIX_TIMEFREE_SOCKET')
 timefree_service = TimefreeService(TimefreeStore(reservation_service.store.path,
-    read_only=not live_gate()), schedule_service,
+    read_only=not timefree_gate()), schedule_service,
     dispatcher=WorkerClient(timefree_socket) if timefree_socket else None,
     output_root='/timefree' if timefree_socket else None)
 schedule_service.timefree = timefree_service

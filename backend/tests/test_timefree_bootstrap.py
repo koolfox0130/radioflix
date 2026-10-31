@@ -62,7 +62,7 @@ class BootstrapManifestTests(unittest.TestCase):
 
 
 class BootstrapGateTests(unittest.TestCase):
-    def test_both_gates_required_and_offline_bootstrap_never_runs(self):
+    def test_timefree_gate_is_independent_of_reservation_gate(self):
         bootstrap = ProductionBootstrap(source_root=Path('/unavailable'), manifest=Path('/unavailable'))
         row = {'job_id': 'a' * 32, 'execution_kind': 'live', 'state': 'running'}
         with patch.dict(os.environ, {'RFRIENDS_ENABLE_WRITES': '0', 'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '0'}):
@@ -70,6 +70,14 @@ class BootstrapGateTests(unittest.TestCase):
                 bootstrap.run(row, Path('/tmp'))
         self.assertEqual(error.exception.code, 'writes_disabled')
         self.assertFalse(bootstrap.ready)
+        with patch.dict(os.environ, {'RFRIENDS_ENABLE_WRITES': '0', 'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '1'}):
+            self.assertTrue(bootstrap._gates_enabled())
+            with self.assertRaises(BootstrapBlocked) as error:
+                bootstrap.run(row, Path('/tmp'))
+            self.assertNotEqual(error.exception.code, 'writes_disabled')
+            self.assertEqual(error.exception.code, 'metadata_invalid')
+        with patch.dict(os.environ, {'RFRIENDS_ENABLE_WRITES': '1', 'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '0'}):
+            self.assertFalse(bootstrap._gates_enabled())
 
 if __name__ == '__main__':
     unittest.main()

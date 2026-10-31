@@ -203,7 +203,7 @@ class TimefreeTests(unittest.TestCase):
 
     def test_gate_enable_still_cannot_create_production_job(self):
         self.service.fixture = False
-        with patch('radioflix.timefree.service.live_gate', return_value=True):
+        with patch('radioflix.timefree.service.timefree_gate', return_value=True):
             self.assertEqual(self.post().json()['detail']['code'], 'worker_unavailable')
         self.assertFalse(self.store.path.exists())
 

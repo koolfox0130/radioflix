@@ -18,7 +18,16 @@
 - backendはcommit済みqueued jobをoutboxとして、起動直後と10秒ごとに同じIDで通知を再試行する。HTTP応答消失・どちらかの再起動でも新jobを作らない。
 - 環境変数やHTTPからfixture/capture実装を指定する入口はない。試験でのみコンストラクタから合成音声を注入する。
 
-`RFRIENDS_ENABLE_WRITES` と `RADIOFLIX_TIMEFREE_ENABLE_WRITES` の両方が1でなければ、backend通知・service受付・worker captureは拒否する。さらにcapture未準備も拒否する。今回環境値は両方0。正常系分岐は関数/コンストラクタのmockだけで検証した。OFFでもファイルの検証・DBの状態修復は行うが、captureの `run_once` は呼ばない。
+書き込みgateは責務を分離する。`RFRIENDS_ENABLE_WRITES` はfuture reservation/native rfriends gateway操作だけを制御し、`RADIOFLIX_TIMEFREE_ENABLE_WRITES` はTimefree job/worker/captureだけを制御する。Timefree captureにnative reservation gateは要求しない。どちらのcaptureも `ready=false` または `bridge_approved=false` なら実行できない。backendのTimefree service、Unix transport、worker、production bootstrapはTimefree専用gateを確認する。今回の本番設定は両方OFF。disabled workerはDB・publish rootをread-onlyで開き、migration/reconcile mutation/staging/network/ffmpegを行わない。
+
+| Mode | `RFRIENDS_ENABLE_WRITES` | `RADIOFLIX_TIMEFREE_ENABLE_WRITES` | DB / publish mount (worker) | 意図 |
+|---|---:|---:|---|---|
+| disabled / smoke | 0 | 0 | RO / RO | health, status, socket確認だけ |
+| Timefree-only enabled (render-only) | 0 | 1 | RW / RW (workerのみ) | 将来のTimefree受入試験用。現状NotReadyのため使用不可 |
+| reservation-enabled | 1 | 0 | DBは既存アプリ構成、Timefree workerはRO | native reservation gatewayだけをfixture/承認済み運用で許可 |
+| both enabled | 1 | 1 | 個別レビューが必要 | 2つの独立機能を意図的に両方有効化 |
+
+隔離gate matrixで4組を確認した。両OFFは両方拒否、Timefree-onlyは予約拒否/fixture Timefree capture受付、reservation-onlyはfixture予約受付/Timefree拒否、両ONはfixture内で両方受付となる。native機器やRadikoは使用しない。
 
 ## 開始直前と公開直前の再照合
 
@@ -192,7 +201,7 @@ DB row by job_id → metadata/eligibility/duplicate/preflight
 
 `FfmpegArgvTranscoder` は将来向けのshell-free境界だがproduction経路には未接続。固定 `/usr/bin/ffmpeg` または `/usr/local/bin/ffmpeg`、あるいは明示的にpreflightから渡された実体path以外を拒否し、argv配列のみで `subprocess.run(..., shell=False)` を呼ぶ。呼出元がexecutable/commandをmetadataから指定する入口はない。試験では `subprocess.run` をmockし、ダミー実行ファイルを実行していない。
 
-production adapterは `ProductionCaptureAdapter` のinterfaceだけで、`ready=false` / `bridge_approved=false`、認証・HTTP・HLS portなし、capture呼出しは常にNotReady。両gateがONでも本実装を起動しない。fixture modeはコンストラクタでのみ注入し、環境変数・APIからproduction/fixture portを切り替える機能はない。production化には、secret mount、allowlisted HTTPS egress、HTTP/HLS/segment総時間・サイズ制限、bounded retryと再試行可能性、認証/playlist/media/ffmpeg/audio/preflightのstructured error mapping、ffmpegのresource limit、egress監査が必要。現時点のworker serviceはnetwork noneであり、本adapter fixtureが通ってもproduction capture準備完了を意味しない。
+production adapterは `ProductionCaptureAdapter` のinterfaceだけで、`ready=false` / `bridge_approved=false`、認証・HTTP・HLS portなし、capture呼出しは常にNotReady。Timefree gateがONでも本実装を起動しない。fixture modeはコンストラクタでのみ注入し、環境変数・APIからproduction/fixture portを切り替える機能はない。production化には、secret mount、allowlisted HTTPS egress、HTTP/HLS/segment総時間・サイズ制限、bounded retryと再試行可能性、認証/playlist/media/ffmpeg/audio/preflightのstructured error mapping、ffmpegのresource limit、egress監査が必要。現時点のworker serviceはnetwork noneであり、本adapter fixtureが通ってもproduction capture準備完了を意味しない。
 
 ## Safe Source API fixture reference（2026-10-20、wire read-only follow-up 2026-10-21）
 
@@ -335,7 +344,7 @@ An isolated copy of the retained CRK test DB and published WAV traversed `/api/p
 
 The active production definition is `docker-compose.yml` plus `docker-compose.rfriends.yml`; it has backend, frontend, and `rfriends-gateway`, with no Timefree worker. The backend has `/data` (the `radioflix-reservations` named volume) read/write, `/recordings` read-only, and native reservation data read-only. `/run` and `/tmp` are container-local. There is no current Timefree socket setting or socket mount. The gateway is not a transport candidate: it owns Docker access and rfriends reservation operations, which must remain outside Timefree.
 
-The existing `/data` volume is technically visible to backend and a future worker, but it is not a safe socket-only writable boundary: making the worker's `/data` mount writable would also make the production SQLite database writable, and making it read-only prevents socket creation. The recordings/native binds are read-only and cannot host a socket. Therefore there is no existing mount that can expose a writable socket directory while keeping the worker's DB read-only. A dedicated socket volume and backend configuration/mount are required; the currently running backend must be recreated when this future transport is installed. This work did not recreate it.
+The existing `/data` volume is technically visible to backend and a future worker, but it is not a safe socket-only writable boundary: making the worker's `/data` mount writable would also make the production SQLite database writable, and making it read-only prevents socket creation. The recordings/native binds are read-only and cannot host a socket. Therefore there is no existing mount that can expose a writable socket directory while keeping the worker's DB read-only. A dedicated socket volume and backend configuration/mount are required; the currently running backend must be recreated when this future transport is installed. The backend also needs the new publish root mounted RO so the existing recording catalog/audio routes can read completed assets; its current DB and ordinary recording mounts remain unchanged. This work did not recreate it.
 
 | Option | Backend recreation | Security/ownership and cleanup | Result |
 |---|---:|---|---|
@@ -346,9 +355,9 @@ The existing `/data` volume is technically visible to backend and a future worke
 
 ### Disabled read-only boot contract
 
-`RADIOFLIX_TIMEFREE_BOOT_MODE` defaults to `disabled`; unknown values also select disabled. `ProductionBootstrap` is still `ready=false` and `bridge_approved=false`, so even an explicitly requested enabled mode cannot make `can_write` true today. The worker store is read-only unless boot mode is explicitly `enabled`, both write gates are on, and the capture bridge is ready and approved.
+`RADIOFLIX_TIMEFREE_BOOT_MODE` defaults to `disabled`; unknown values also select disabled. `ProductionBootstrap` is still `ready=false` and `bridge_approved=false`, so even an explicitly requested enabled mode cannot make `can_write` true today. The worker store is read-only unless boot mode is explicitly `enabled`, the Timefree write gate is on, and the capture bridge is ready and approved. `RFRIENDS_ENABLE_WRITES` does not participate in this decision.
 
-When either gate is OFF, startup may validate static configuration, open the existing SQLite file through read-only queries, create/bind the dedicated Unix socket, and serve health/status. It does not run schema creation/migration, reconcile, job scans requiring mutation, flock creation, staging/publish setup, manifest writes, external Radiko requests, or ffmpeg. `TimefreeStore.transaction()` rejects before creating a parent or opening SQLite. `worker.reconcile()` and `run_once()` return before touching files; controller startup/tick skip reconcile, and dispatch/cancel fail with `writes_disabled` before mutation. The worker process receives the DB and publish root as read-only mounts in disabled Compose, providing an OS-level second barrier.
+When the Timefree gate is OFF, startup may validate static configuration, open the existing SQLite file through read-only queries, create/bind the dedicated Unix socket, and serve health/status. It does not run schema creation/migration, reconcile, job scans requiring mutation, flock creation, staging/publish setup, manifest writes, external Radiko requests, or ffmpeg. `TimefreeStore.transaction()` rejects before creating a parent or opening SQLite. `worker.reconcile()` and `run_once()` return before touching files; controller startup/tick skip reconcile, and dispatch/cancel fail with `writes_disabled` before mutation. The worker process receives the DB and publish root as read-only mounts in disabled Compose, providing an OS-level second barrier. `RFRIENDS_ENABLE_WRITES` is not consulted by this Timefree path.
 
 The backend TimefreeStore also uses read-only mode while the live gates are off. Its existing SQLite read paths use `mode=ro`, and an absent Timefree schema is reported as an empty list rather than created. The backend's unrelated application database needs remain governed by the existing application configuration; this guarantee concerns Timefree operations.
 
@@ -361,9 +370,25 @@ The backend TimefreeStore also uses read-only mode while the live gates are off.
 | Backend UDS mount | RO | RO | connect only; no socket unlink/create |
 | Container root | RO | RO | application runtime |
 
-The explicit `docker-compose.timefree.yml` candidate is disabled mode. `docker-compose.timefree-enabled.yml` is a future-only override and must never be combined casually: it also sets `RFRIENDS_ENABLE_WRITES=1` for backend/gateway and therefore enables native reservation writes as well as Timefree gates. It is not safe to use until the capture bridge is independently approved and the full enablement plan has been reviewed. Both overlays remain undeployed.
+Compose modes are explicit and have not been deployed:
 
-Read-only host path inspection on 2026-10-31 found the proposed `/volume1/@home/kool-fox/radiko_public/radioflix-timefree` bind source does not exist. It was not created. The existing ordinary recording, native timefree, and native reservation source directories exist with their inspected permissions. The disabled production overlay uses `create_host_path: false`, so worker deployment must remain blocked until a dedicated publish root is separately provisioned and its ownership/permissions and filesystem behavior are reviewed.
+- `docker-compose.timefree-disabled.yml`: disabled/smoke. Backend, gateway, and worker explicitly use both gates OFF. Worker DB and publish root are RO; only the UDS volume is RW for the worker. No public worker port, no Docker socket on the worker, and `network_mode: none`.
+- `docker-compose.timefree-enabled.yml`: future Timefree-only override. It keeps `RFRIENDS_ENABLE_WRITES=0`, sets only the Timefree gate to 1, and makes only the worker's DB and publish root writable. The backend sees the publish root RO. This is render-only; `ready=false` / `bridge_approved=false` still prevent capture.
+- `docker-compose.rfriends-writes.yml`: reservation-only override to use with disabled Timefree mode. It enables only `RFRIENDS_ENABLE_WRITES` for backend/gateway and keeps Timefree OFF; the worker remains disabled and RO.
+
+Recommended file sets: base + `docker-compose.rfriends.yml` + `docker-compose.timefree-disabled.yml` for initial deployment; add `docker-compose.timefree-enabled.yml` only for a separately reviewed future Timefree-only mode; add `docker-compose.rfriends-writes.yml` only for reservation mode. Enabled files are render-only and must not be started as part of this validation.
+
+Read-only host path inspection on 2026-10-31 found the proposed `/volume1/@home/kool-fox/radiko_public/radioflix-timefree` bind source does not exist. It was not created. `/volume1` is ext4, currently mounted `ro`, with 1.8 TiB reported free; recheck at deployment. The target is separate from ordinary recordings at `/volume1/@home/kool-fox/radiko_public/radiko` and the native timefree root. Proposed ownership is UID:GID `10001:20000`, root mode `0750`; worker-created staging/final directories remain private mode `0700`, and the current backend runs as root to read the completed catalog. Provision only after the mount is confirmed writable and the target is still absent. The documented future commands (not run here) are:
+
+```sh
+findmnt -no FSTYPE,OPTIONS /volume1
+df -h /volume1
+test ! -e /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+install -d -o 10001 -g 20000 -m 0750 /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+stat -c '%u:%g %a %n' /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+```
+
+If the mount is still RO, stop; do not remount it as part of worker deployment. Never use mode 0777. The Compose bind uses `create_host_path: false`; deployment remains blocked until the root is provisioned and filesystem rename/fsync behavior, ownership, permissions, and free space are rechecked.
 
 ### Socket mode and recovery
 
@@ -375,4 +400,6 @@ Before bind, the worker refuses symlink, regular-file, foreign-owner, or active-
 
 `docker-compose.timefree-disabled-test.yml` uses a separate project, fixture DB/publish/native roots under `/tmp`, `network_mode: none`, read-only rootfs and source/data mounts, non-root worker, `cap_drop: ALL`, `no-new-privileges`, no ports, and no Docker socket. Only the dedicated UDS volume is writable by the worker. This topology is for isolated validation; it does not reference production data.
 
-The future production sequence, when separately authorized, is: capture current backend/frontend/gateway container IDs, restart counts, health and mounts; render and inspect the exact Compose config; build only the reviewed backend/worker images; recreate backend only to attach the RO socket volume, group 20000, socket path, and RO Timefree root while preserving its existing application DB behavior; start the worker with disabled overlay only; confirm health/socket, gate-OFF rejection, and production API/audio smoke; stop and roll back if any existing container other than backend is recreated, any gate/readiness becomes enabled, or DB/recording/native fingerprints change. This plan is documentation only and was not executed.
+Future disabled deployment order (not executed): (1) snapshot HEAD/config, container IDs/restart counts/mounts, gates, DB/recording/native/at fingerprints and active jobs; (2) provision the dedicated publish root only after `/volume1` is writable and checks pass; (3) prepare the named socket volume from the image's 10001:20000, 0770 socket directory; (4) render/inspect Compose config; (5) recreate backend only to add the RO UDS volume, group 20000, socket setting, and RO `/timefree` catalog mount; existing image, ports, networks, DB, secret, and ordinary recording mounts stay fixed; (6) backend health/API smoke; (7) start worker using disabled overlay only; (8) verify UDS owner/mode and backend connectivity; (9) health/status and `writes_disabled`; (10) verify Radiko/network 0 and DB/root/native fingerprints unchanged; (11) worker-only restart test; (12) existing frontend/API/audio smoke. Abort if another existing service would be recreated or any gate/readiness changes.
+
+Rollback: stop/remove only the Timefree worker; render the saved previous Compose file set; recreate backend from its previous image/config with the UDS volume, socket environment, group addition, and `/timefree` mount removed; check backend health/API/audio, then frontend behavior. Do not delete DB, socket volume data, or publish-root data as rollback. This plan is documentation only and was not executed.

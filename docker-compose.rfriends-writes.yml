@@ -1,0 +1,11 @@
+# Reservation-only write override. Combine with the normal RadioFlix/rfriends
+# files and the Timefree-disabled overlay. Timefree capture stays OFF.
+services:
+  backend:
+    environment:
+      RFRIENDS_ENABLE_WRITES: "1"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+
+  rfriends-gateway:
+    environment:
+      RFRIENDS_ENABLE_WRITES: "1"

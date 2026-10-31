@@ -4,7 +4,7 @@ import json
 import socket
 
 from radioflix.timefree.publisher import job_id
-from radioflix.timefree.service import live_gate
+from radioflix.timefree.service import timefree_gate
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -45,7 +45,7 @@ class WorkerClient:
 
     def dispatch(self, ident):
         job_id(ident)  # Reject injection before opening any socket.
-        if not live_gate():
+        if not timefree_gate():
             return False
         response = self.request('POST', '/dispatch', {'job_id': ident})
         if response != {'job_id': ident, 'accepted': True}:

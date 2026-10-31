@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -8,6 +9,11 @@ from radioflix.schemas.reservations import Broadcast, JST, RecordingError
 
 
 WEEKLY_WINDOW = timedelta(hours=2)
+
+
+def reservation_writes_enabled():
+    """Only the native rfriends reservation path follows this gate."""
+    return os.getenv('RFRIENDS_ENABLE_WRITES') == '1'
 
 
 class ReservationService:

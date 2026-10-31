@@ -1,26 +1,19 @@
-# Explicit future live-write override. Do not deploy until capture bridge is
-# approved and a separate production change is authorized.
+# Explicit future Timefree-only override. Render-only until separately
+# authorized; native reservation writes remain disabled.
 services:
   backend:
     environment:
-      RFRIENDS_ENABLE_WRITES: "1"
+      RFRIENDS_ENABLE_WRITES: "0"
       RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
-    volumes:
-      - type: bind
-        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
-        target: /timefree
-        read_only: false
-        bind:
-          create_host_path: false
 
   rfriends-gateway:
     environment:
-      RFRIENDS_ENABLE_WRITES: "1"
+      RFRIENDS_ENABLE_WRITES: "0"
 
   timefree-worker:
     environment:
       RADIOFLIX_TIMEFREE_BOOT_MODE: enabled
-      RFRIENDS_ENABLE_WRITES: "1"
+      RFRIENDS_ENABLE_WRITES: "0"
       RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
     volumes:
       - type: volume
@@ -33,3 +26,6 @@ services:
         read_only: false
         bind:
           create_host_path: false
+
+  # The existing catalog/API only reads completed files. Keep its mount RO;
+  # only the worker can create staging and final output.

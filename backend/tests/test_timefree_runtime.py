@@ -299,12 +299,12 @@ class RuntimeTests(unittest.TestCase):
         from unittest.mock import Mock
         dispatcher = Mock()
         service = TimefreeService(TimefreeStore(self.t.store.path), self.t.guide.service, dispatcher=dispatcher)
-        with patch('radioflix.timefree.service.live_gate', return_value=True):
+        with patch('radioflix.timefree.service.timefree_gate', return_value=True):
             service.dispatch_pending()
         dispatcher.dispatch.assert_called_once_with(row['job_id'])
         self.assertEqual(self.state(row), 'queued')
         self.worker.transport.kind = 'live'
-        with patch('radioflix.timefree.worker.live_gate', return_value=True):
+        with patch('radioflix.timefree.worker.timefree_gate', return_value=True):
             self.worker.run_once(row['job_id'])
         self.assertEqual(self.state(row), 'completed')
 
@@ -369,7 +369,7 @@ class RuntimeTests(unittest.TestCase):
     def test_cancel_is_rejected_before_read_only_store_access_when_gates_off(self):
         path = self.t.root / 'cancel-readonly' / 'jobs.sqlite3'
         service = TimefreeService(TimefreeStore(path, read_only=True), self.t.guide.service)
-        with patch('radioflix.timefree.service.live_gate', return_value=False):
+        with patch('radioflix.timefree.service.timefree_gate', return_value=False):
             with self.assertRaises(RecordingError) as error:
                 service.cancel('a' * 32)
         self.assertEqual(error.exception.code, 'writes_disabled')
@@ -383,7 +383,7 @@ class RuntimeTests(unittest.TestCase):
             'RADIOFLIX_DB_PATH': str(db_path),
             'RADIOFLIX_TIMEFREE_ROOT': str(output),
             'RADIOFLIX_TIMEFREE_BOOT_MODE': 'enabled',
-            'RFRIENDS_ENABLE_WRITES': '1',
+            'RFRIENDS_ENABLE_WRITES': '0',
             'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '1',
         }
         with patch.dict(os.environ, environment, clear=False):
@@ -500,7 +500,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(server.started)
             client = WorkerClient(uds)
             self.assertTrue(client.ready())
-            with patch('radioflix.timefree.transport.live_gate', return_value=True):
+            with patch('radioflix.timefree.transport.timefree_gate', return_value=True):
                 self.assertTrue(client.dispatch(row['job_id']))
             for _ in range(150):
                 if self.state(row) == 'completed': break

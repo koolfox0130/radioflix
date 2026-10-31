@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from radioflix.timefree.bootstrap import ProductionBootstrap
 from radioflix.timefree.preflight import Preflight
 from radioflix.timefree.publisher import job_id
-from radioflix.timefree.service import live_gate
+from radioflix.timefree.service import timefree_gate
 from radioflix.timefree.store import TimefreeStore
 from radioflix.timefree.worker import TimefreeWorker
 
@@ -25,7 +25,7 @@ class Dispatch(BaseModel):
 
 
 class Controller:
-    def __init__(self, worker, *, gate=live_gate):
+    def __init__(self, worker, *, gate=timefree_gate):
         self.worker, self.gate = worker, gate
         self.wake = threading.Event()
         self.notify_loop = None
@@ -139,7 +139,7 @@ def production_app():
     requested_mode = os.getenv('RADIOFLIX_TIMEFREE_BOOT_MODE', 'disabled')
     if requested_mode not in ('disabled', 'enabled'):
         requested_mode = 'disabled'
-    can_write = (requested_mode == 'enabled' and live_gate() and
+    can_write = (requested_mode == 'enabled' and timefree_gate() and
                  capture.ready is True and capture.bridge_approved is True)
     store = TimefreeStore(os.getenv('RADIOFLIX_DB_PATH', '/data/radioflix.sqlite3'),
                           read_only=not can_write)

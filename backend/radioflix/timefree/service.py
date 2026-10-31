@@ -27,8 +27,9 @@ def eligibility(item, now):
     return None
 
 
-def live_gate():
-    return os.getenv('RFRIENDS_ENABLE_WRITES') == '1' and os.getenv('RADIOFLIX_TIMEFREE_ENABLE_WRITES') == '1'
+def timefree_gate():
+    """Timefree writes are independent of native reservation writes."""
+    return os.getenv('RADIOFLIX_TIMEFREE_ENABLE_WRITES') == '1'
 
 
 class TimefreeService:
@@ -41,7 +42,7 @@ class TimefreeService:
         self.output_root = output_root
 
     def dispatch_pending(self):
-        if not self.dispatcher or not live_gate():
+        if not self.dispatcher or not timefree_gate():
             return
         for row in self.store.list():
             if row['state'] == 'queued' and row['execution_kind'] == 'live':
@@ -91,7 +92,7 @@ class TimefreeService:
             raise RecordingError('native_unknown', '既存予約を確認できません。')
         if any(overlaps(b, n) for n in native):
             raise RecordingError('native_conflict', 'rfriends3で予約済みです。')
-        if not self.fixture and not live_gate():
+        if not self.fixture and not timefree_gate():
             raise RecordingError('writes_disabled', 'タイムフリー録音は無効です。')
         # Production transport is deliberately not installed by this offline milestone.
         if not self.fixture and (not self.dispatcher or not self.dispatcher.ready()):
@@ -115,7 +116,7 @@ class TimefreeService:
         return self.get(job_id)
 
     def cancel(self, job_id):
-        if not self.fixture and not live_gate():
+        if not self.fixture and not timefree_gate():
             raise RecordingError('writes_disabled', 'タイムフリー録音は無効です。')
         self.get(job_id)
         with self.store.transaction() as db:

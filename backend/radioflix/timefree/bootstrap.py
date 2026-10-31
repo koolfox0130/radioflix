@@ -93,8 +93,7 @@ class ProductionBootstrap:
 
     @staticmethod
     def _gates_enabled() -> bool:
-        return (os.getenv('RFRIENDS_ENABLE_WRITES') == '1' and
-                os.getenv('RADIOFLIX_TIMEFREE_ENABLE_WRITES') == '1')
+        return os.getenv('RADIOFLIX_TIMEFREE_ENABLE_WRITES') == '1'
 
     def preflight(self, row: dict, work: Path) -> None:
         if not self._gates_enabled():
