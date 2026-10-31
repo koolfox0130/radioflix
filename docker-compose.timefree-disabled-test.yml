@@ -1,0 +1,104 @@
+# Fully isolated read-only boot integration test. Uses only /tmp test fixtures.
+services:
+  backend:
+    image: radioflix-timefree-disabled-test:local
+    build: ./backend
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    network_mode: none
+    read_only: true
+    group_add:
+      - "20000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      RADIKO_DIR: /recordings
+      RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RADIOFLIX_TIMEFREE_ROOT: /timefree
+      RADIOFLIX_TIMEFREE_SOCKET: /run/timefree/control.sock
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+      RFRIENDS_ENABLE_WRITES: "0"
+    volumes:
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/db/radioflix.sqlite3
+        target: /data/radioflix.sqlite3
+        read_only: true
+      - type: volume
+        source: timefree-disabled-test-control
+        target: /run/timefree
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/publish
+        target: /timefree
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/recordings
+        target: /recordings
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/native-reservations
+        target: /native-reservations
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/native-timefree
+        target: /native-timefree
+        read_only: true
+      - type: bind
+        source: ./backend/tests/timefree_disabled_smoke.py
+        target: /tests/timefree_disabled_smoke.py
+        read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid
+
+  timefree-worker:
+    image: radioflix-timefree-disabled-test:local
+    command: ["python", "-m", "radioflix.timefree.control"]
+    user: "10001:20000"
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 256m
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RADIOFLIX_TIMEFREE_ROOT: /timefree
+      RADIOFLIX_TIMEFREE_SOCKET: /run/timefree/control.sock
+      RADIOFLIX_TIMEFREE_BOOT_MODE: disabled
+      RFRIENDS_ENABLE_WRITES: "0"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
+    volumes:
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/db/radioflix.sqlite3
+        target: /data/radioflix.sqlite3
+        read_only: true
+      - timefree-disabled-test-control:/run/timefree
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/publish
+        target: /timefree
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/native-reservations
+        target: /native-reservations
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/recordings
+        target: /recordings
+        read_only: true
+      - type: bind
+        source: /tmp/radioflix-timefree-disabled-test/native-timefree
+        target: /native-timefree
+        read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid
+    healthcheck:
+      test: ["CMD", "python", "-m", "radioflix.timefree.healthcheck"]
+      interval: 5s
+      timeout: 10s
+      start_period: 10s
+      retries: 5
+
+volumes:
+  timefree-disabled-test-control:

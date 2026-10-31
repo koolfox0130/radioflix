@@ -115,6 +115,8 @@ class TimefreeService:
         return self.get(job_id)
 
     def cancel(self, job_id):
+        if not self.fixture and not live_gate():
+            raise RecordingError('writes_disabled', 'タイムフリー録音は無効です。')
         self.get(job_id)
         with self.store.transaction() as db:
             row = db.execute('SELECT state FROM timefree_jobs WHERE job_id=?', (job_id,)).fetchone()

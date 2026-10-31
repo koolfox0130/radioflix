@@ -6,11 +6,14 @@ from pathlib import Path
 
 
 class TimefreeStore:
-    def __init__(self, path):
+    def __init__(self, path, *, read_only=False):
         self.path = Path(path)
+        self.read_only = bool(read_only)
 
     @contextmanager
     def transaction(self):
+        if self.read_only:
+            raise RuntimeError('writes_disabled')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path, timeout=15) as db:
             db.row_factory = sqlite3.Row

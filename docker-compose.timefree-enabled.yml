@@ -1,0 +1,35 @@
+# Explicit future live-write override. Do not deploy until capture bridge is
+# approved and a separate production change is authorized.
+services:
+  backend:
+    environment:
+      RFRIENDS_ENABLE_WRITES: "1"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
+    volumes:
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+        target: /timefree
+        read_only: false
+        bind:
+          create_host_path: false
+
+  rfriends-gateway:
+    environment:
+      RFRIENDS_ENABLE_WRITES: "1"
+
+  timefree-worker:
+    environment:
+      RADIOFLIX_TIMEFREE_BOOT_MODE: enabled
+      RFRIENDS_ENABLE_WRITES: "1"
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
+    volumes:
+      - type: volume
+        source: radioflix-reservations
+        target: /data
+        read_only: false
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+        target: /timefree
+        read_only: false
+        bind:
+          create_host_path: false

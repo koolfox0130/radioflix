@@ -3,22 +3,28 @@ import hashlib
 import json
 import os
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from radioflix.timefree.control import Controller, create_app
+from radioflix.timefree.control import (Controller, Dispatch, create_app, prepare_socket_directory,
+                                        prepare_socket_path, production_app,
+                                        secure_socket_permissions)
 from radioflix.timefree.preflight import Preflight
 from radioflix.timefree.publisher import Publisher, rename_noreplace
 from radioflix.timefree.service import TimefreeService
 from radioflix.timefree.store import TimefreeStore
 from radioflix.timefree.transport import WorkerClient
 from radioflix.timefree.worker import TimefreeWorker, completed_assets
+from radioflix.schemas.reservations import RecordingError
 import test_timefree
 
 
@@ -314,6 +320,126 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(WorkerClient('/unused').dispatch(row['job_id']))
             connection.assert_not_called()
 
+    def test_read_only_boot_skips_schema_migration_reconcile_and_filesystem_writes(self):
+        ident = 'a' * 32
+        item = self.t.item
+        with self.t.store.transaction() as db:
+            db.execute('''INSERT INTO timefree_jobs(job_id,broadcast_episode_id,station,title,start_at,end_at,
+                state,created_at,snapshot,deadline,execution_kind) VALUES (?,?,?,?,?,?,'queued',?,?,?,'live')''',
+                (ident, item['id'], item['station'], item['title'], item['starts_at'], item['ends_at'],
+                 self.t.now.isoformat(), json.dumps(item), '2099-01-01T00:00:00+09:00'))
+        before_db = hashlib.sha256(self.t.store.path.read_bytes()).hexdigest()
+        before_root = {p.relative_to(self.t.output).as_posix():
+                       (p.stat().st_ino, p.stat().st_size, p.stat().st_mtime_ns,
+                        hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None)
+                       for p in self.t.output.rglob('*')}
+        read_only_store = TimefreeStore(self.t.store.path, read_only=True)
+        read_only_worker = TimefreeWorker(read_only_store, self.t.output, ReadyAudio(),
+                                          preflight=lambda _: self.fail('preflight in disabled mode'))
+        controller = Controller(read_only_worker, gate=lambda: True)
+        app = create_app(controller)
+        endpoints = {route.path: route.endpoint for route in app.routes if hasattr(route, 'path')}
+        self.assertEqual(endpoints['/health'](), {
+            'capture_ready': True, 'writes_enabled': False,
+            'boot_mode': 'disabled_read_only', 'reason': 'boot_mode_disabled'})
+        self.assertEqual(endpoints['/status']()['job_count'], 1)
+        with self.assertRaises(HTTPException) as error:
+            endpoints['/dispatch'](Dispatch(job_id=ident))
+        self.assertEqual(error.exception.detail, {'code': 'boot_mode_disabled'})
+        self.assertIsNone(controller.tick())
+        self.assertFalse(read_only_worker.reconcile())
+        self.assertIsNone(read_only_worker.run_once(ident))
+        self.assertEqual(hashlib.sha256(self.t.store.path.read_bytes()).hexdigest(), before_db)
+        self.assertEqual(before_root, {p.relative_to(self.t.output).as_posix():
+                                      (p.stat().st_ino, p.stat().st_size, p.stat().st_mtime_ns,
+                                       hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None)
+                                      for p in self.t.output.rglob('*')})
+        self.assertFalse(Path(str(self.t.store.path) + '.timefree.lock').exists())
+
+    def test_read_only_store_never_creates_database_or_schema(self):
+        path = self.t.root / 'absent' / 'jobs.sqlite3'
+        store = TimefreeStore(path, read_only=True)
+        self.assertEqual(store.list(), [])
+        with self.assertRaisesRegex(RuntimeError, 'writes_disabled'):
+            with store.transaction():
+                self.fail('read-only transaction entered')
+        self.assertFalse(path.exists())
+        self.assertFalse(path.parent.exists())
+
+    def test_cancel_is_rejected_before_read_only_store_access_when_gates_off(self):
+        path = self.t.root / 'cancel-readonly' / 'jobs.sqlite3'
+        service = TimefreeService(TimefreeStore(path, read_only=True), self.t.guide.service)
+        with patch('radioflix.timefree.service.live_gate', return_value=False):
+            with self.assertRaises(RecordingError) as error:
+                service.cancel('a' * 32)
+        self.assertEqual(error.exception.code, 'writes_disabled')
+        self.assertFalse(path.exists())
+        self.assertFalse(path.parent.exists())
+
+    def test_production_app_stays_read_only_without_capture_approval(self):
+        db_path = self.t.root / 'production-mode-check' / 'radioflix.sqlite3'
+        output = self.t.root / 'production-mode-check' / 'publish'
+        environment = {
+            'RADIOFLIX_DB_PATH': str(db_path),
+            'RADIOFLIX_TIMEFREE_ROOT': str(output),
+            'RADIOFLIX_TIMEFREE_BOOT_MODE': 'enabled',
+            'RFRIENDS_ENABLE_WRITES': '1',
+            'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '1',
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            app = production_app()
+            self.assertTrue(app.state.controller.worker.read_only)
+            self.assertTrue(app.state.controller.worker.store.read_only)
+            endpoints = {route.path: route.endpoint for route in app.routes if hasattr(route, 'path')}
+            self.assertEqual(endpoints['/health']()['boot_mode'], 'disabled_read_only')
+            self.assertEqual(endpoints['/status']()['job_count'], 0)
+        self.assertFalse(db_path.exists())
+        self.assertFalse(output.exists())
+
+    def test_disabled_startup_and_tick_never_reconcile(self):
+        readonly = TimefreeWorker(TimefreeStore(self.t.store.path, read_only=True),
+                                  self.t.output, ReadyAudio())
+        controller = Controller(readonly, gate=lambda: True)
+        with patch.object(readonly, 'reconcile') as reconcile:
+            self.assertIsNone(controller.tick())
+            reconcile.assert_not_called()
+
+    def test_socket_directory_permissions_and_stale_socket_cleanup(self):
+        directory = self.t.root / 'socket-dir'
+        directory.mkdir(mode=0o770)
+        directory.chmod(0o770)
+        info = prepare_socket_directory(directory)
+        self.assertEqual(info.stat().st_mode & 0o777, 0o770)
+        stale_path = directory / 'control.sock'
+        owned_socket = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=os.geteuid(),
+                                       st_ino=101, st_dev=202)
+        with patch.object(Path, 'lstat', return_value=owned_socket), \
+             patch('radioflix.timefree.control.socket.socket') as connect, \
+             patch.object(Path, 'unlink') as unlink:
+            connect.return_value.connect.side_effect = OSError(111, 'connection refused')
+            prepare_socket_path(stale_path)
+            unlink.assert_called_once_with()
+            connect.return_value.close.assert_called_once()
+        with patch.object(Path, 'lstat', return_value=owned_socket), \
+             patch('radioflix.timefree.control.socket.socket') as connect, \
+             patch.object(Path, 'unlink') as unlink:
+            with self.assertRaisesRegex(RuntimeError, 'socket_already_active'):
+                prepare_socket_path(stale_path)
+            unlink.assert_not_called()
+        live_socket = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o666, st_uid=os.geteuid(),
+                                      st_gid=os.getegid())
+        secured_socket = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=os.geteuid(),
+                                         st_gid=os.getegid())
+        with patch.object(Path, 'lstat', side_effect=[live_socket, secured_socket]), \
+             patch('radioflix.timefree.control.os.chmod') as chmod:
+            secure_socket_permissions(stale_path)
+            chmod.assert_called_once_with(stale_path, 0o660, follow_symlinks=False)
+        invalid = directory / 'not-a-socket'
+        invalid.write_text('keep')
+        with self.assertRaisesRegex(RuntimeError, 'socket_path_invalid'):
+            prepare_socket_path(invalid)
+        self.assertEqual(invalid.read_text(), 'keep')
+
     def test_backend_restart_checks_completed_files_before_worker_reconcile(self):
         row = self.queue()
         self.worker.run_once(row['job_id'])
@@ -322,8 +448,8 @@ class RuntimeTests(unittest.TestCase):
                                     output_root=self.t.output)
         self.assertEqual(restarted.get(row['job_id'])['state'], 'unknown')
         self.assertEqual(self.state(row), 'completed')  # read-only API, worker owns journal repair
-        Controller(self.worker).tick()  # gate OFF still reconciles, never captures
-        self.assertEqual(self.state(row), 'unknown')
+        Controller(self.worker).tick()  # gate OFF now skips recovery mutation entirely
+        self.assertEqual(self.state(row), 'completed')
 
     def test_existing_radioflix_reservation_job_blocks_capture(self):
         row = self.queue()

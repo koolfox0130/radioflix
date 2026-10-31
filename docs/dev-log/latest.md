@@ -1,75 +1,93 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-10-29 22:34:04 JST
+2026-10-31 15:36:46 JST
 
 ## Current task
-Complete isolated Phase 4 integration of verified timefree recordings into the existing RadioFlix recording catalogue, episodes, and shared audio player.
+Design and validate a gate-OFF Timefree Worker deployment architecture without changing production containers or data.
 
 ## Current phase
-Completed the read-only catalogue integration against a copy of the retained CRK fixture DB/WAV, verified API Range behavior, frontend shared-player playback, and three additional recovery passes. Final regression passed; reviewing the exact diff and preparing the user-authorized logical checkpoint.
+Disabled read-only boot mode and isolated deployment topology validation. Production deployment was not attempted.
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Start HEAD: `196fae15afa57b0443482136473557f33d22e7cf`; branch `main`.
-- Added a shared `RecordingCatalog` facade below existing API routes. Normal recordings preserve their legacy IDs/order/files; verified completed timefree recordings are additive. Timefree fixtures remain hidden by default and require explicit test opt-in.
-- Timefree program ID is URL-safe and deterministic from station/title. Episode ID uses `broadcast_episode_id` under a `timefree-` namespace; generated filename is stable from broadcast interval and episode ID.
-- Catalogue visibility validates completed DB row, publication intent, manifest, WAV/hash/size, and managed-root path. An incomplete/unknown ordinary recording scan fails closed for timefree visibility. An overlapping normal recording takes display priority; files are never removed.
-- Reused the retained `CRK / 心に光を` completed asset only. The test DB/publish tree was copied under `/tmp/radioflix-timefree-catalog-final`; no new Radiko request, capture, segment download, or recording occurred.
-- On the isolated artifact copy: `/api/programs` returned one timefree program; `/episodes` returned one stable episode; `/audio` returned the WAV (`audio/wav`, 57,598,030 bytes). Valid Range returned 206, invalid Range 416, traversal 404, and HEAD remained 405.
-- Frontend exercised the existing shared player with the fixture: route navigation kept the player alive; rate/seek controls worked; the existing stable localStorage progress key and Media Session metadata/state (where exposed) were verified. No separate player or favorite system was added.
-- Three more test-only fresh-store/fresh-worker reconciliation passes kept one completed DB row, one audio file, one manifest, unchanged hashes/metadata, no staging, and zero capture/ffmpeg/Radiko calls.
-- A synthetic 590-file ordinary recording regression preserved all 590 filenames and parsed station/start/end intervals, legacy program IDs, and normal M4A `audio/mp4` serving. The actual production recording volume was not mounted or touched.
+- Re-read `AGENTS.md`, this progress log, Phase 4 runtime/validation docs, current Git state, and the actual active Compose definitions.
+- Start HEAD/origin/main: `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed`; branch `main`.
+- Confirmed active production Compose is `docker-compose.yml` + `docker-compose.rfriends.yml`; services are backend, frontend, and rfriends-gateway. No Timefree worker is deployed.
+- Read-only production inspection confirmed backend `295f0e2a9096…`, frontend `5480a0de5bfb…`, gateway `33d43c8efecb…`, and rfriends3 `e346364f5944…` were running with restart count 0. Backend `RFRIENDS_ENABLE_WRITES=0`; Timefree write gate unset/OFF. No production service was changed.
+- Found `/data` is an existing shared named volume but cannot safely serve as a worker-writable socket-only mount: worker RW would also grant DB write; worker RO cannot create the socket. Existing recording/native mounts are RO; `/run` and `/tmp` are container-local. Dedicated UDS volume is the safe design and requires backend recreation/configuration in a future authorized deployment.
+- Added explicit disabled boot behavior: Timefree store transaction refuses before path creation/SQLite open; worker skips reconcile/run; controller startup/tick skip mutation; dispatch/cancel reject while gates are OFF; disabled worker uses a read-only store and filesystem mounts.
+- Added fixed UDS lifecycle checks: socket directory owner/group/mode 10001:20000/0770, socket 0660, no permission broadening, owned stale socket cleanup with connect and inode recheck, refusal of foreign/active/regular/symlink paths, and inode-safe cleanup.
+- Backend mounts the shared socket volume read-only and joins group 20000; isolated test proved the backend can connect over that RO mount.
+- Added disabled production candidate, separate future enabled override, and network-none isolated Compose test. Config render verified disabled worker has no public ports, Docker socket, or network; DB/publish/native source mounts are RO and only its UDS volume is RW.
+- The future enabled override is separate and undeployed. It sets `RFRIENDS_ENABLE_WRITES=1` on the backend/gateway as well as the Timefree gate, so it also enables native reservation writes and needs separate review.
+- Read-only host stat found the proposed production Timefree publish bind source `/volume1/@home/kool-fox/radiko_public/radioflix-timefree` is missing. It was not created. Production deploy is blocked until that root is separately provisioned/reviewed.
+- Isolated test topology used only `/tmp/radioflix-timefree-disabled-test` fixtures, `network_mode: none`, read-only root/data/source mounts, non-root worker, `cap_drop: ALL`, `no-new-privileges`, and no ports/Docker socket.
+- Worker healthy and running, socket smoke passed (`0660`, owner 10001:20000); dispatch returned `writes_disabled`. Three worker restarts, backend restart-equivalent, and owned stale-socket recovery all passed against the isolated project. Fixture DB/root inode, size, mtime, hash, SQLite schema, and file count remained unchanged. Isolated test containers/socket volume were removed after validation.
 
 ## In progress
-- Final diff/security review, final safety snapshot, and the requested logical commit/push if the reviewed scope remains clean.
+- None. Architecture and isolated validation are complete; production path provisioning and backend recreation remain future, separately authorized work.
 
 ## Next actions
-1. Finish secret scan, `git diff --check`, and confirm only the intended integration files are staged.
-2. Commit the catalogue/API/player integration and relevant validation docs as one logical unit.
-3. Push `main`, verify local HEAD equals `origin/main` and the actual remote main ref.
-4. Update this log and a matching history snapshot with commit/push result; leave unrelated existing changes untouched.
+1. Review and commit only the gate-OFF architecture/test/docs files listed below; do not stage the pre-existing `docs/radioflix-timefree-source-api.md` change or unrelated untracked files.
+2. Push the architecture checkpoint and verify `HEAD == origin/main`.
+3. In a separately authorized task, provision the dedicated production publish root with reviewed ownership/permissions, then recreate backend only to attach the RO UDS volume/config and run the disabled worker deployment test. Do not enable capture.
+4. Keep production capture blocked until the source bridge is ready/approved and enablement has separate review.
 
 ## Blockers / Issues
-- No functional blocker for the isolated catalogue/API/player integration.
-- This validates the retained fixture asset through the ordinary API and shared player, not a production deployment. The production capture bridge remains fail-closed; deployment and real production recording remain unauthorized/not ready.
-- HEAD requests to the audio endpoint return 405, matching the existing route behavior; no HEAD feature was added.
+- Current backend lacks a Timefree socket mount/configuration, and no safe existing path gives the worker a writable socket directory while preserving DB read-only. Backend recreation is required for future backend/worker communication.
+- The proposed production publish-root bind source is missing; `create_host_path: false` deliberately prevents accidental directory creation.
+- Capture remains `ready=false` / `bridge_approved=false`. No production Timefree worker deployment or recording is authorized by this validation.
 
 ## Files changed
-- `backend/radioflix/services/recording_catalog.py` (new): merged read-only catalogue, stable timefree IDs, duplicate policy, strict visibility/path checks.
-- `backend/app.py`: route existing programs/episodes/audio handlers through the catalogue; additive source marker for normal episodes; timefree WAV uses the existing FileResponse/Range path.
-- `backend/radioflix/timefree/worker.py`: expose verified completed-row metadata to the catalogue.
-- `backend/tests/test_recording_catalog.py` (new): API/Range/security/state/duplicate/stability/recovery and 590-file synthetic normal-catalog regressions.
-- `frontend/tests/playback-navigation-ui.mjs`: mock timefree program/episode exercises the existing persistent player, seek/rate controls, progress key, and Media Session.
-- `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`, `docs/dev-log/latest.md`, plus this history snapshot.
-- Other pre-existing diffs such as `docs/radioflix-timefree-source-api.md`, unrelated untracked history, `.codex/`, and Dockerfile backups are preserved and excluded from this checkpoint unless later review finds they are necessary.
+- `backend/radioflix/timefree/store.py`: strict read-only transaction mode.
+- `backend/radioflix/timefree/worker.py`: disabled read-only no-op reconcile/run path.
+- `backend/radioflix/timefree/control.py`: explicit disabled boot, health/status, dispatch gate, bounded UDS setup/cleanup.
+- `backend/radioflix/timefree/service.py`: cancel checks gates before DB access/mutation.
+- `backend/app.py`: backend Timefree store is read-only while gates are off.
+- `backend/Dockerfile`: seeds restricted shared socket directory owner/group/mode.
+- `backend/radioflix/timefree/healthcheck.py`: UDS disabled-state health probe.
+- `backend/tests/test_timefree_runtime.py`, `backend/tests/timefree_disabled_smoke.py`: read-only and isolated UDS coverage.
+- `docker-compose.timefree.yml`, `docker-compose.timefree-disabled-test.yml`, `docker-compose.timefree-enabled.yml`: disabled/isolated/future-enabled layouts.
+- `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`: architecture, mount matrix, socket, recreate plan, and missing-path blocker.
+- Existing modified `docs/radioflix-timefree-source-api.md`, unrelated history, `.codex/`, and frontend Dockerfile backups are preserved and excluded from this task's stage set.
 
 ## Git state
-Branch `main`; HEAD=`196fae15afa57b0443482136473557f33d22e7cf`. No commit/push yet in this task. Existing source/docs diffs and unrelated untracked files are preserved; no reset/restore used. Only named integration files are intended for staging.
+- Branch `main`; HEAD and `origin/main` remain `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed` before checkpoint.
+- No commit/push yet; explicit file-by-file staging will follow final checks.
+- Existing unrelated modified/untracked files are preserved; no reset/restore/add-all used.
 
 ## Tests
-- Backend full discovery including PHP/bootstrap/worker: **337 PASS / 0 skipped**. Used Python 3.11 test dependencies from `/tmp` and a dedicated PHP test container with network none, read-only root/source, UID 1000, cap-drop ALL, no-new-privileges; test-only temp roots only.
-- New recording catalogue/API tests: **7 PASS** in the final backend discovery.
-- Existing CRK artifact API integration on an isolated `/tmp` copy: PASS; program/episode/audio mapping, WAV headers, Range 206, invalid Range 416, traversal 404.
-- Recovery on isolated test copy: **3/3 PASS**, capture 0, ffmpeg 0, Radiko requests 0, duplicates 0, file/manifest unchanged.
-- Python syntax: 4 changed Python files parsed successfully. PHP syntax: worker, fixture bindings, and rfriends driver PASS. `git diff --check` PASS before final doc update; will run again after.
-- Frontend: schedule **148 checks PASS** at 360/390/412/1280; reservation UI **24 scenarios PASS** at 360/1280; playback/navigation **26 checks PASS** at 360.
-- `npx tsc --noEmit`: PASS. `npm run lint`: 0 errors / 5 existing warnings. `npm run build`: PASS. The initial sandbox build failed only because Turbopack child-process port binding was denied; the same command passed with command-only approval.
-- Secret scan and final `git diff --check` remain to be run after documentation updates.
+- Backend full discovery in a Python 3.14 / PHP / ffmpeg test-only image: **343 PASS, 0 skipped**. First run had one synthetic ffprobe timeout; that test passed standalone, then full discovery passed on rerun without changing timeout/assertions.
+- Focused read-only boot/runtime tests: PASS.
+- Isolated Compose: network none, backend+worker started; backend RO socket connection, health/status, `writes_disabled` negative dispatch, worker restart ×3, backend restart, stale-socket recovery: PASS.
+- Test DB and publish fixture hashes/inodes/size/mtime/schema/count unchanged: PASS.
+- Python syntax compile: 74 files PASS. PHP syntax: 3 files PASS.
+- Frontend schedule UI: 148 PASS; reservation UI: 24 scenarios PASS; playback/navigation: 26 PASS.
+- `npx tsc --noEmit`: PASS.
+- `npm run lint`: 0 errors, 5 warnings (existing warnings).
+- `npm run build`: PASS.
+- Disabled and enabled production Compose config rendering: PASS; no production `up`, `build`, restart, or recreate.
+- `git diff --check`: PASS. Secret-pattern scan: PASS (17 changed/new files scanned; no credential-pattern findings).
+- Test worker runtime had `network_mode:none`; no Radiko request, segment, ffmpeg capture, job, publish, or production DB access occurred. The temporary test image build fetched system packages from Debian repositories only.
 
 ## Runtime / Safety
-- Production backend gate was read-only checked: `RFRIENDS_ENABLE_WRITES=0`; `RADIOFLIX_TIMEFREE_ENABLE_WRITES` unset/OFF. Source still fixes `ready=false`, `bridge_approved=false`; no timefree worker is deployed.
-- All new API/recovery integration ran against the copied `/tmp` fixture DB and publish root in network-none, read-only-root, non-root containers. Backend/source/dependencies were read-only. Production DB/recording volumes, native rsv/dat/sh/at, Docker socket, and rfriends3 writable mounts were absent.
-- No production DB or recording-root write, no native mutation, no rfriends3 or production container restart/recreate, no Radiko communication, no new recording, and no publisher use outside `/tmp` occurred.
-- Backend test container used both gates `0`; production gate remained OFF.
+- `RFRIENDS_ENABLE_WRITES=0` in live backend; Timefree write gate unset/OFF. No gate changed.
+- Source capture `ready=false`, `bridge_approved=false` (production bootstrap remains NotReady).
+- No production Timefree job, Radiko request, segment fetch, capture ffmpeg, publish, DB/root write, or worker deployment.
+- No production backend/frontend/gateway/rfriends3 restart/recreate. Production container identities/restart counts were inspected read-only and remained the same as the starting snapshot.
+- No native dat/sh/at or rfriends3 operation/change. Isolated test mounted only fixture native paths RO.
+- Disabled test worker process was `10001:20000`, UDS only, no public TCP/Docker socket; DB/publish/native sources RO.
+- Production publish root is currently missing, so deployment is not ready even with both gates OFF.
 
 ## Important decisions
-- Integrate below the existing API route layer; do not create timefree-only endpoints or a second frontend player.
-- Ordinary recordings win duplicates. If ordinary audio inventory is unresolved, suppress timefree assets rather than risk a duplicate.
-- Existing read/progress behavior is keyed by stable `(program ID, filename)` in localStorage. Favorite handling remains the existing title-based static list; no separate timefree favorite feature was introduced.
-- The isolated artifact proves the user-facing API/player path for a completed fixture-enabled test asset only. It does not change production defaults or readiness.
+- Reuse of existing `/data` for a socket is rejected: file-level RO and socket RW cannot be separated safely on the current broad volume mount.
+- Use a dedicated named UDS volume, worker RW and backend RO, group 20000, socket 0660; this requires backend recreation.
+- Disabled boot is enforced both in code and by read-only worker mounts. Gate OFF means no schema migration/reconcile/staging/publish/network/ffmpeg path.
+- Do not deploy the enabled override; its shared `RFRIENDS_ENABLE_WRITES` setting also enables gateway/native reservation writes.
+- Do not create the missing production Timefree path during this task.
 
 ## Recovery instructions
-Continue from HEAD `196fae15afa57b0443482136473557f33d22e7cf`. The original retained E2E artifact remains under `/tmp/radioflix-timefree-e2e-20261029/run-0545`; the test copy is under `/tmp/radioflix-timefree-catalog-final`. Do not issue Radiko requests or access production output/DB to repeat this validation. Preserve all pre-existing unrelated docs/history/`.codex`/Dockerfile changes. Before checkpoint, stage only the explicitly reviewed catalogue/API/worker/test/frontend/docs files.
+Resume on branch `main` at `34a21c5faebf0d4cfd0d84bc809b78bcb79611ed` plus this worktree diff. Preserve the pre-existing `docs/radioflix-timefree-source-api.md` diff, `.codex/`, all pre-existing untracked history, and frontend Dockerfile backups. Run the final secret scan and review the explicit stage set; commit/push only the current gate-OFF architecture. Production backend recreation, worker deployment, publish-root creation, and gate changes require a separate authorized task.

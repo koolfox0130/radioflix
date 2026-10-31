@@ -140,12 +140,13 @@ app.include_router(schedule_router(schedule_service))
 app.include_router(reservation_router(reservation_service, program_service))
 
 from radioflix.timefree.store import TimefreeStore
-from radioflix.timefree.service import TimefreeService
+from radioflix.timefree.service import TimefreeService, live_gate
 from radioflix.timefree.transport import WorkerClient
 from radioflix.api.timefree import timefree_router
 
 timefree_socket = os.getenv('RADIOFLIX_TIMEFREE_SOCKET')
-timefree_service = TimefreeService(TimefreeStore(reservation_service.store.path), schedule_service,
+timefree_service = TimefreeService(TimefreeStore(reservation_service.store.path,
+    read_only=not live_gate()), schedule_service,
     dispatcher=WorkerClient(timefree_socket) if timefree_socket else None,
     output_root='/timefree' if timefree_socket else None)
 schedule_service.timefree = timefree_service

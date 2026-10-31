@@ -54,10 +54,11 @@ class FixturePHP:
 
 
 class TimefreeWorker:
-    def __init__(self, store, root, transport, *, clock=None, preflight=None):
+    def __init__(self, store, root, transport, *, clock=None, preflight=None, read_only=False):
         self.store, self.root, self.transport = store, Path(root), transport
         self.clock = clock or (lambda: datetime.now(JST))
         self.preflight = preflight
+        self.read_only = bool(read_only or getattr(store, 'read_only', False))
         self.publisher = Publisher(self.root, store)
 
     @contextmanager
@@ -109,6 +110,8 @@ class TimefreeWorker:
         # Orphan .staging/work files are preserved, never promoted or listed.
 
     def reconcile(self):
+        if self.read_only:
+            return False
         if not self.store.path.exists():
             return
         with self.locked() as acquired:
@@ -118,6 +121,8 @@ class TimefreeWorker:
     def run_once(self, requested_id=None):
         if requested_id is not None:
             job_id(requested_id)
+        if self.read_only:
+            return None
         if self.transport.kind != 'fixture' and not live_gate():
             return None
         with self.locked() as acquired:

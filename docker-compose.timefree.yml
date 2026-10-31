@@ -1,12 +1,18 @@
-# Gate-OFF deployment candidate. NOT deployed by implementation/test commands.
-# Combine with docker-compose.yml and docker-compose.rfriends.yml only after review.
+# Gate-OFF production topology candidate. NOT deployed by implementation/tests.
+# Combine only with docker-compose.yml and docker-compose.rfriends.yml after a
+# separately reviewed backend recreation plan. No capture bridge is approved.
 services:
   backend:
+    group_add:
+      - "20000"
     environment:
       RADIOFLIX_TIMEFREE_SOCKET: /run/timefree/control.sock
       RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
     volumes:
-      - radioflix-timefree-control:/run/timefree
+      - type: volume
+        source: radioflix-timefree-control
+        target: /run/timefree
+        read_only: true
       - type: bind
         source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
         target: /timefree
@@ -19,6 +25,7 @@ services:
     image: radioflix-timefree-worker:review
     command: ["python", "-m", "radioflix.timefree.control"]
     restart: unless-stopped
+    user: "10001:20000"
     network_mode: none
     read_only: true
     cap_drop: [ALL]
@@ -29,13 +36,29 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RADIOFLIX_TIMEFREE_ROOT: /timefree
+      RADIOFLIX_TIMEFREE_SOCKET: /run/timefree/control.sock
+      RADIOFLIX_TIMEFREE_BOOT_MODE: disabled
       RFRIENDS_ENABLE_WRITES: "0"
       RADIOFLIX_TIMEFREE_ENABLE_WRITES: "0"
     volumes:
-      - radioflix-reservations:/data
+      - type: volume
+        source: radioflix-reservations
+        target: /data
+        read_only: true
       - radioflix-timefree-control:/run/timefree
-      - /home/kool-fox/Share/Radio/rfriends3/data/rsv:/native-reservations:ro
-      - /volume1/@home/kool-fox/radiko_public/radiko:/recordings:ro
+      - type: bind
+        source: /home/kool-fox/Share/Radio/rfriends3/data/rsv
+        target: /native-reservations
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radiko
+        target: /recordings
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: /volume1/@home/kool-fox/radiko_public/timefree
         target: /native-timefree
@@ -45,10 +68,11 @@ services:
       - type: bind
         source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
         target: /timefree
+        read_only: true
         bind:
           create_host_path: false
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=64m,mode=1777,noexec,nosuid
 
 volumes:
   radioflix-timefree-control:
