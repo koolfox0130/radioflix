@@ -1,12 +1,4 @@
-"""Sanitized failures crossing the capture adapter boundary."""
+"""Backward-compatible imports for the implementation-independent error contract."""
+from radioflix.timefree.contracts import CaptureFailure, CaptureNotReady
 
-
-class CaptureFailure(ValueError):
-    def __init__(self, code: str):
-        self.code = code
-        super().__init__(code)
-
-
-class CaptureNotReady(CaptureFailure):
-    def __init__(self):
-        super().__init__('capture_not_ready')
+__all__ = ['CaptureFailure', 'CaptureNotReady']

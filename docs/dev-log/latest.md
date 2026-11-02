@@ -1,71 +1,78 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-11-01 00:10:33 JST
+2026-11-03 07:15:54 JST
 
 ## Current task
-Diagnose and prevent stale production backend images from omitting the Phase 4 Timefree API.
+Phase 4 checkpoint 1のみ：production capture/readiness/bridge guard修復・完成。one-job/acceptance CLIは対象外。
 
 ## Current phase
-Isolated validation image, fixture worker socket E2E, and requested regression completed. No production deployment was attempted in this task.
+checkpoint 1全条件を検証済み。論理commit 1つとpushの直前checkpoint。
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Start HEAD and `origin/main`: `766deeac27bca03bfd5edf5fc66e8ffa7bd79043`. `git ls-remote origin refs/heads/main` was subsequently verified successfully and returned the same SHA. No Git history rewrite occurred.
-- Production rollback state is healthy and unchanged during this task: backend container `acf059cb70a3` uses the retained rollback image `sha256:b2eb892390e2f680cc0d02ee1e6ccb1c15a249a4569be74bb18ea9e774e0ba09`; frontend `5480a0de5bfb`, gateway `33d43c8efecb`, and rfriends3 `e346364f5944` remain running with restart count 0. No Timefree worker container is running. Backend GET `/api/programs` returned 200. `RFRIENDS_ENABLE_WRITES=0`; Timefree gate is unset/OFF.
-- Root cause: prior production `docker compose up -d --no-deps backend` did not build. Effective Compose uses build context `./backend` and `Dockerfile`; Dockerfile copies `app.py` and the full `radioflix` package; no prior `.dockerignore` excluded the Timefree code. The Oct 6 production image had a different `app.py` hash and lacked `/app/radioflix/timefree`, the Timefree API module, and API routes. This is deployment-command omission/stale tag reuse (F, with D as consequence), not context, COPY, ignore, target, or cache failure.
-- Added explicit image selection/build declaration to `docker-compose.yml`, `RADIOFLIX_GIT_SHA` build arg and OCI revision label in `backend/Dockerfile`, and `backend/.dockerignore` for test/cache/local data/env files. Runtime docs now require immutable commit-tagged build, label/package/OpenAPI verification, fixture UDS check, and previous-image retention. Validation docs record the incident and correction.
-- Built isolated image `radioflix-backend:phase4-validation-766deeac`, ID `sha256:1a1bb7a7b44cdab28117e37745293c7ba1ca38286080206fd30ac3bd69989a95`, revision label equals the starting HEAD. It contains Timefree package/worker client; app import and `/api/timefree/jobs` OpenAPI route checks passed.
-- Isolated network-none Compose E2E passed: backend socket RO, worker socket RW, fixture-only DB and roots, both gates 0, no public ports. Backend reached worker health/status; dispatch was blocked with `writes_disabled`. Fixture DB and publish-root fingerprints stayed unchanged. No production service/container/volume was used for this E2E.
-- Backend full discovery: 398 PASS / 0 skipped using Python 3.12 compatible preexisting wheels, PHP CLI, portable local ffmpeg/ffprobe, network none, read-only root and non-root. Initial retries exposed test-environment issues (Python ABI mismatch, missing tmp dirs, slow system ffprobe); they were corrected only in temporary test setup, with no source/timeout relaxation. Focused ffmpeg suite: 14 PASS.
-- Frontend: schedule UI 148 PASS using Playwright 1.51.1/Chromium 134; reservation UI scenarios passed at 360px and 1280px; playback/navigation 26 PASS. TypeScript PASS. Lint: 0 errors, 5 existing warnings. Production build PASS after rerun outside the sandbox due Turbopack child-process bind restriction.
-- `git diff --check` PASS. Secret-pattern scan on the intended changed files: 0 matches.
+- 既存差分を保全し、git status/diff --stat/diff --checkとHEADを実確認。main、開始HEAD fbdda3a06d8397dfe825550ee2bf5ec74810ba30。
+- 実tracebackで循環経路を再現：recording_catalog→worker→admission→capture.errors/package __init__→production→admission.require_capture_start。
+- contracts（stdlib dataclass/例外）、pure admission、runtime_policy、production実装に分離。TYPE_CHECKING/遅延importなし。既存例外import pathとclass identityを維持。catalog/API契約変更なし。
+- ProductionAuthenticator→TimefreePlaylistSource→HlsMediaSource→既存FfmpegArgvTranscoder→validator→既存worker/Publisherを接続。owned filename間はno-replace link。
+- refresh_readinessがsource/config/preflight/DB/schema/filesystem/staging/ffmpeg/ffprobeを通信なしで検査。readyはimmutable結果のsnapshotでguardからffmpeg/DBを実行しない。capture開始時に再検査。disabled factory/healthはlocal probeなし。
+- bridge_approvedはlive外部captureの明示承認。readyと独立。実行RO storeと能力評価storeを分離。boot enabled AND Timefree gate AND ready AND bridge承認をpure policyで判定、RFRIENDS非依存。
+- 前回16件を個別分類して全解消。A循環import1、B例外sanitize契約1、Cfixture ffmpeg symlink設定5、D隔離PHP PATH9。詳細はdocs/radioflix-timefree-checkpoint1.md。
+- 安全制限維持：unknown host fail-closed、既存allowlist、bounded timeout/response、ENDLIST必須、合計2MiB、変換60秒、最大8wire request、path隔離/no-overwrite。ProductionMediaFetcher観測専用prefixは番組全体保証がないため既存HlsMediaSource使用。
+- 本番操作0、Docker操作0、実Radiko/production endpoint通信0。fixtureはnetwork-none + Fake transport + 合成AAC/WAVのみ。
 
 ## In progress
-- Review the focused change list, make one checkpoint commit, then attempt `git push origin main` and verify the remote if network access permits. No production deploy/recreate is authorized or planned.
+コード・テスト完成。今回関連ファイルだけをstageし、ユーザーが条件付き承認したcheckpoint 1 commit/pushを行う。
 
 ## Next actions
-1. Stage only `backend/Dockerfile`, `backend/.dockerignore`, `docker-compose.yml`, `docs/radioflix-timefree-runtime.md`, `docs/radioflix-timefree-phase4-validation.md`, and `docs/dev-log/latest.md` plus this task's history snapshot.
-2. Commit the stale-image prevention checkpoint after final diff review.
-3. Attempt push to origin/main; verify HEAD and actual remote if GitHub resolves. Preserve all unrelated source-api edits, untracked history, `.codex/`, and frontend backup files.
-4. Stop before any production backend recreate, worker start, gate change, Radiko connection, or recording.
+1. stage対象一覧を確認して1つの論理commitを作成、origin/mainへpush。既存差分・監査一時資料を含めない。
+2. commit/push後のGit実状態とdev-logを更新しhistory snapshot保存。
+3. 次のユーザー指示でcheckpoint 2（指定1job acceptance）へ進める。今回は実装しない。
+4. 本番image revision/root所有者/socket/ffmpeg設定は別途承認の再同期・監査で扱う。
 
 ## Blockers / Issues
-- The first remote lookup failed DNS; a later explicit retry succeeded and confirmed actual remote main equals the starting HEAD. Push remains to be attempted after checkpoint commit.
-- Production was intentionally not deployed. This corrects provenance and validation procedures only.
+checkpoint 1の新規regressionなし。skip1：旧hash固定rfriends PHP source未配置による互換テスト。今回のPython stackには不要、既存PHP driver/bootstrap testsはPASS。
+本番B残課題は未変更：backend revision unknown、Timefree root1000:1000/0750、socket実permission/backend→worker疎通未確認。
+NAS /usr/bin/ffmpegはsymlinkで既存allowlistにより拒否される。fixtureでは実体pathを既存preflight_allowlisted_pathで明示許可。本番側は別途設定確認が必要。任意長の番組は60秒等の制限外、今回拡大なし。
 
 ## Files changed
-- `backend/Dockerfile`: OCI revision label/build arg.
-- `backend/.dockerignore`: narrow build context exclusions.
-- `docker-compose.yml`: explicit selectable backend image and build SHA arg.
-- `docs/radioflix-timefree-runtime.md`: stale-image incident, image verification/build/rollback procedure.
-- `docs/radioflix-timefree-phase4-validation.md`: incident and isolated image/UDS results.
-- `docs/dev-log/latest.md`: current task and verification record.
-- Existing `docs/radioflix-timefree-source-api.md`, `.codex/`, prior untracked history, and frontend backup Dockerfiles are pre-existing unrelated changes and remain untouched.
+今回commit対象：
+- backend/radioflix/timefree/contracts.py、admission.py、runtime_policy.py：pure契約・判定・runtime設定の一方向依存。
+- backend/radioflix/timefree/capture/errors.py：既存例外pathの互換export。
+- backend/radioflix/timefree/capture/production.py：既存source composition、local readiness snapshot、承認境界、transcoder接続。
+- backend/radioflix/timefree/control.py、worker.py：factoryとlive実行guard。daemonの暗黙bridge承認なし。
+- backend/tests/test_timefree_admission.py、test_timefree_production.py：guard/ready/bridge/source接続/disabled検証。
+- backend/tests/test_timefree_sources.py、test_timefree_runtime.py：変更したready/live開始契約を明示。
+- backend/tests/test_rfriends_driver.py：fake atに隔離PHP commandを引継ぐ（production PHP変更なし）。
+- docs/radioflix-timefree-checkpoint1.md：責務・契約・16件分類・制限・検証。
+- docs/dev-log/latest.md、今回ready snapshot：進捗。
+既存backend/Dockerfile、docs/radioflix-timefree-source-api.md、未追跡.codex/history/backups/frontend資料は保持しstageしない。
 
 ## Git state
-- Branch `main`, HEAD `766deeac27bca03bfd5edf5fc66e8ffa7bd79043`; origin tracking ref is same. No commit/push yet. Actual remote lookup failed DNS.
-- Intended changes listed above. All unrelated modified/untracked content is preserved. No add-all/reset/restore.
+main、HEAD fbdda3a06d8397dfe825550ee2bf5ec74810ba30。upstream origin/main。今回commit/push前、index開始時空。reset/restoreなし。.codex/dxp-runtime-audit.txtはcommit禁止。
 
 ## Tests
-- Backend: 398 PASS / 0 skipped; focused ffmpeg: 14 PASS.
-- Validation image: import/startup and Timefree OpenAPI route PASS; backend↔fixture-worker Unix socket health/status PASS; disabled dispatch rejected.
-- Frontend: schedule 148 PASS; reservations scenarios PASS at 360px and 1280px; playback/navigation 26 PASS; `npx tsc --noEmit` PASS; `npm run lint` 0 errors / 5 warnings; `npm run build` PASS.
-- `git diff --check` PASS; changed-file secret-pattern scan PASS (0 matches).
-- The first test attempts failed only due mismatched Python wheel ABI, missing temporary directories, outdated slow ffprobe and Playwright/browser test environment. Corrected isolated reruns passed. No test condition or production timeout was relaxed.
+今回実行（すべてテスト通信はnetwork-none）：
+1. import smoke 15 modules PASS。collection 415時点errors0、最終fullでもcollection error0。
+2. pure admission 4 tests PASS。
+3. capture/guard/source/transcoder/bootstrap/inventory/area 164 tests PASS。
+4. catalog/API/reservations/schedule/weekly 127 tests PASS。
+5. Timefree/worker/recovery/gate/PHP driver 129 tests、128 PASS/skip1、fail/error0。
+6. backend full discovery 420 tests / 17.238秒、419 PASS/skip1、fail0/error0。
+- production adapter18 tests、pure guard4 testsを含む。前回16失敗は全解消。
+- Python AST 80 files PASS、PHP worker.php/fixture-bindings.php syntax PASS、git diff --check PASS。
+- frontend変更なし、UI/typecheck/lint/build未実施。
+検証環境：/tmp/radioflix-phase4-venv（Python3.11）、/tmp/radioflix-phase4-tools/bin/php（PHP8.2）、NAS ffmpeg実体をfixtureへ明示許可。sandbox TestClient停止を避け、承認付きunshare -Urnでloだけのnetwork namespace内で実行。Dockerなし。本番Python3.14 imageは今回検証していない。
+full command: unshare -Urn env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend:backend/tests PATH=/tmp/radioflix-phase4-tools/bin:/usr/bin:/bin /tmp/radioflix-phase4-venv/bin/python -m unittest discover -s backend/tests -q
+前回405 tests fail6/error10/skip1は履歴であり現状ではない。
 
 ## Runtime / Safety
-- Production backend image remains old rollback image; no container was built/recreated/started/restarted in this task. Frontend, gateway and rfriends3 unchanged. Worker absent.
-- Both gates OFF (`RFRIENDS_ENABLE_WRITES=0`, Timefree OFF/unset). `ready=false` / `bridge_approved=false` remain as fail-closed configuration; no capture path was invoked.
-- No Radiko DNS/auth/HTTP/HLS, segment fetch, ffmpeg recording, publisher, DB/root/native write, or rfriends3/native change occurred. Production backend GET smoke was read-only.
-- Validation image/build and fixture Compose used test-only execution. Previous production backend image is retained for rollback.
+本番変更0、Docker実行0、gate/ready/bridge本番ONなし、本番job/publish/rfriends/native予約変更なし、実Radiko/production endpoint通信0。fixtureのみ/tmp DB/outputで合成変換・公開を検証。ネットワークを用いる予定操作は許可済みGit pushのみ。active weekly/reservation等本番状態は今回再監査しない。
 
 ## Important decisions
-- `docker compose up` alone is insufficient for a changed backend source tree. Build and prove an immutable SHA-tagged image before any future recreate.
-- This work does not authorize deployment. Future disabled worker deployment remains a separate operation and capture remains NotReady / not approved.
+checkpoint 1完成条件を全て充足。新規regression0。旧PHP互換source欠如によるskip1は成功扱いせず限定事項として記録、checkpoint 1のPython adapter完成を阻害しない。one-job/CLIには進まず、次checkpoint用の基盤までで終了。
 
 ## Recovery instructions
-- Resume from the focused unstaged changes listed above. Do not include the existing `docs/radioflix-timefree-source-api.md` change or unrelated untracked files.
-- Before any future deployment, explicitly build the backend with `RADIOFLIX_GIT_SHA`, inspect its OCI revision label and Timefree package/OpenAPI routes, render the disabled Compose set, then follow the reviewed deployment procedure. Keep the old image available.
+AGENTS.md、本ログ、実git statusを読む。checkpoint 1完了後のcommit/push情報を確認。既存差分と今回変更を混同しない。ユーザー指示があればcheckpoint 2へ進めるが、本番変更・実通信は別途明示承認が必要。監査一時ファイルをcommitしない。

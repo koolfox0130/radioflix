@@ -11,7 +11,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from radioflix.timefree.bootstrap import ProductionBootstrap
+from radioflix.timefree.capture.production import ProductionCaptureAdapter
+from radioflix.timefree.capture.source.transport import ProductionHttpTransport
+from radioflix.timefree.runtime_policy import require_runtime_capture
+from radioflix.timefree.contracts import CaptureNotReady
 from radioflix.timefree.preflight import Preflight
 from radioflix.timefree.publisher import job_id
 from radioflix.timefree.service import timefree_gate
@@ -133,20 +136,30 @@ def create_app(controller):
     return app
 
 
-def production_app():
-    capture = ProductionBootstrap(source_root=Path(os.getenv('RADIOFLIX_TIMEFREE_SOURCE_ROOT', '/rfriends-source')),
-                                  manifest=Path(__file__).with_name('bootstrap-source-manifest.json'))
-    requested_mode = os.getenv('RADIOFLIX_TIMEFREE_BOOT_MODE', 'disabled')
-    if requested_mode not in ('disabled', 'enabled'):
-        requested_mode = 'disabled'
-    can_write = (requested_mode == 'enabled' and timefree_gate() and
-                 capture.ready is True and capture.bridge_approved is True)
-    store = TimefreeStore(os.getenv('RADIOFLIX_DB_PATH', '/data/radioflix.sqlite3'),
-                          read_only=not can_write)
+def production_worker(*, bridge_approved=False, transport=None):
+    store = TimefreeStore(os.getenv('RADIOFLIX_DB_PATH', '/data/radioflix.sqlite3'))
     root = Path(os.getenv('RADIOFLIX_TIMEFREE_ROOT', '/timefree'))
     guard = Preflight(store, '/native-reservations', ['/recordings', '/native-timefree'], root)
-    return create_app(Controller(TimefreeWorker(store, root, capture, preflight=guard,
-                                                read_only=not can_write)))
+    # The existing transport budget is preserved, not expanded for full programs.
+    source = transport if transport is not None else ProductionHttpTransport(
+        observation_mode=True, max_wire_requests=8)
+    capture = ProductionCaptureAdapter(store=store, managed_root=root, preflight=guard,
+                                      transport=source, bridge_approved=bridge_approved)
+    if os.getenv('RADIOFLIX_TIMEFREE_BOOT_MODE') == 'enabled' and timefree_gate():
+        capture.refresh_readiness()
+    try:
+        require_runtime_capture(capture)
+        can_write = True
+    except CaptureNotReady:
+        can_write = False
+    # Execution authorization must not overwrite the local capability snapshot.
+    execution_store = store if can_write else TimefreeStore(store.path, read_only=True)
+    return TimefreeWorker(execution_store, root, capture, preflight=guard, read_only=not can_write)
+
+
+def production_app():
+    # Daemon startup has no implicit external capture approval.
+    return create_app(Controller(production_worker()))
 
 
 def main():

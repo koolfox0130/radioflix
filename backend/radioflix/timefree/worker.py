@@ -16,6 +16,8 @@ from pathlib import Path
 
 from radioflix.schemas.reservations import JST
 from radioflix.timefree.service import eligibility, timefree_gate
+from radioflix.timefree.runtime_policy import require_runtime_capture
+from radioflix.timefree.contracts import CaptureNotReady
 
 
 def safe_file(root, relative):
@@ -123,8 +125,11 @@ class TimefreeWorker:
             job_id(requested_id)
         if self.read_only:
             return None
-        if self.transport.kind != 'fixture' and not timefree_gate():
-            return None
+        if self.transport.kind != 'fixture':
+            try:
+                require_runtime_capture(self.transport)
+            except CaptureNotReady:
+                return None
         with self.locked() as acquired:
             if not acquired:
                 return None
@@ -177,8 +182,8 @@ class TimefreeWorker:
                 elif self.transport.kind != 'fixture':
                     raise ValueError('preflight_required')
                 # Last gate check immediately before any real capture transport.
-                if self.transport.kind != 'fixture' and not timefree_gate():
-                    raise ValueError('writes_disabled')
+                if self.transport.kind != 'fixture':
+                    require_runtime_capture(self.transport)
                 expected = (datetime.fromisoformat(row['end_at']) - datetime.fromisoformat(row['start_at'])).total_seconds()
                 capture_job = getattr(self.transport, 'capture_job', None)
                 if callable(capture_job):

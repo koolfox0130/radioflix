@@ -304,7 +304,9 @@ class RuntimeTests(unittest.TestCase):
         dispatcher.dispatch.assert_called_once_with(row['job_id'])
         self.assertEqual(self.state(row), 'queued')
         self.worker.transport.kind = 'live'
-        with patch('radioflix.timefree.worker.timefree_gate', return_value=True):
+        self.worker.transport.bridge_approved = True
+        with patch.dict(os.environ, {'RADIOFLIX_TIMEFREE_ENABLE_WRITES': '1',
+                                     'RADIOFLIX_TIMEFREE_BOOT_MODE': 'enabled'}):
             self.worker.run_once(row['job_id'])
         self.assertEqual(self.state(row), 'completed')
 

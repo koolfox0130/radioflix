@@ -522,7 +522,7 @@ class SafeSourceApiTests(unittest.TestCase):
             with self.assertRaises(SourceNotReady):
                 transport.request(HttpRequest('GET', 'https://api.radiko.jp/x'))
         self.assertFalse(transport.ready)
-        self.assertFalse(ProductionCaptureAdapter.ready)
+        self.assertIsInstance(ProductionCaptureAdapter.ready, property)
         self.assertFalse(ProductionCaptureAdapter.bridge_approved)
 
     def test_secret_and_http_objects_redact_repr(self):

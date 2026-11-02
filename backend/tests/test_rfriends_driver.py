@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -65,7 +66,7 @@ class DriverTests(unittest.TestCase):
         (self.bin / 'fake_at.php').write_text(FAKE_AT)
         for name in ['at', 'atq', 'atrm']:
             executable = self.bin / name
-            executable.write_text(f'#!/bin/sh\nexec php "{self.bin}/fake_at.php" {name} "$@"\n')
+            executable.write_text(f'#!/bin/sh\nexec {shlex.join(PHP)} "{self.bin}/fake_at.php" {name} "$@"\n')
             executable.chmod(0o755)
         start = datetime.now(JST).replace(microsecond=0) + timedelta(days=1)
         self.job = {'id': 'a' * 32, 'station': 'TBS', 'region': 'JP13', 'title': 'Test Program',
