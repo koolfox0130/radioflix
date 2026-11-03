@@ -94,8 +94,10 @@ class TimefreeWorker:
                        (state, self.clock().isoformat(), code, '録音結果または開始条件を確認してください。', row['job_id']))
             self.store.event(db, row['job_id'], state, self.clock().isoformat())
 
-    def _reconcile(self):
+    def _reconcile(self, requested_id=None):
         for row in self.store.list():
+            if requested_id is not None and row['job_id'] != requested_id:
+                continue
             if row['execution_kind'] != self.transport.kind or row['state'] not in ('running', 'unknown', 'completed'):
                 continue
             try:
@@ -133,73 +135,113 @@ class TimefreeWorker:
         with self.locked() as acquired:
             if not acquired:
                 return None
-            self.publisher.prepare_root()
-            self._reconcile()
-            with self.store.transaction() as db:
-                candidate = db.execute("""SELECT * FROM timefree_jobs WHERE state='queued'
-                    AND execution_kind=? AND (? IS NULL OR job_id=?) ORDER BY created_at,job_id LIMIT 1""",
-                    (self.transport.kind, requested_id, requested_id)).fetchone()
-                if not candidate:
-                    return None
-                row = self.store.decode(candidate)
-                db.execute("UPDATE timefree_jobs SET state='running',started_at=? WHERE job_id=?",
-                           (self.clock().isoformat(), row['job_id']))
-                self.store.event(db, row['job_id'], 'running', self.clock().isoformat())
-            work = None
-            publishing = False
+            return self._run_locked(requested_id)
 
-            def publish_capture(output, capture_workspace=None):
-                nonlocal publishing
-                output = Path(output)
-                if output.is_symlink() or not stat.S_ISREG(output.stat().st_mode):
+    def accept_one(self, requested_id):
+        """Exactly one explicit target, no scheduling/polling/capture retry.
+
+        Terminal rows are read-only no-ops. Unknown/running targets undergo
+        the existing proof-based recovery, never automatic recapture.
+        """
+        ident = job_id(requested_id)
+        row = self.store.get(ident)
+        if row is None:
+            raise ValueError('job_not_found')
+        terminal = {'completed', 'failed', 'cancelled', 'expired'}
+        if row['state'] in terminal:
+            return row['state']
+        if self.read_only or not callable(self.preflight):
+            raise CaptureNotReady()
+        require_runtime_capture(self.transport)  # Required even for injected fixtures.
+        if row['execution_kind'] != self.transport.kind:
+            raise ValueError('execution_kind')
+        with self.locked() as acquired:
+            if not acquired:
+                raise ValueError('worker_busy')
+            row = self.store.get(ident)
+            if row is None:
+                raise ValueError('job_not_found')
+            if row['state'] in terminal:
+                return row['state']
+            require_runtime_capture(self.transport)
+            if row['state'] in {'running', 'unknown'}:
+                self._reconcile(ident)
+            elif row['state'] == 'queued':
+                self._run_locked(ident, target_only=True)
+            else:
+                raise ValueError('job_state_invalid')
+            return self.store.get(ident)['state']
+
+    def _run_locked(self, requested_id, *, target_only=False):
+        self.publisher.prepare_root()
+        self._reconcile(requested_id if target_only else None)
+        with self.store.transaction() as db:
+            candidate = db.execute("""SELECT * FROM timefree_jobs WHERE state='queued'
+                AND execution_kind=? AND (? IS NULL OR job_id=?) ORDER BY created_at,job_id LIMIT 1""",
+                (self.transport.kind, requested_id, requested_id)).fetchone()
+            if not candidate:
+                return None
+            row = self.store.decode(candidate)
+            db.execute("UPDATE timefree_jobs SET state='running',started_at=? WHERE job_id=?",
+                       (self.clock().isoformat(), row['job_id']))
+            self.store.event(db, row['job_id'], 'running', self.clock().isoformat())
+        work = None
+        publishing = False
+
+        def publish_capture(output, capture_workspace=None):
+            nonlocal publishing
+            output = Path(output)
+            if output.is_symlink() or not stat.S_ISREG(output.stat().st_mode):
+                raise ValueError('invalid_output')
+            if capture_workspace is None:
+                if work is None or (work / 'output').is_symlink() or output.resolve().parent != work.resolve() / 'output':
                     raise ValueError('invalid_output')
-                if capture_workspace is None:
-                    if work is None or (work / 'output').is_symlink() or output.resolve().parent != work.resolve() / 'output':
-                        raise ValueError('invalid_output')
-                else:
-                    capture_workspace = Path(capture_workspace)
-                    capture_root = (self.root / '.staging' / 'capture-work').resolve(strict=True)
-                    if (capture_workspace.is_symlink() or not capture_workspace.resolve(strict=True).is_relative_to(capture_root)
-                            or output.resolve().parent != capture_workspace.resolve(strict=True)):
-                        raise ValueError('invalid_output')
-                audio_info(output, expected)
-                if eligibility(row['broadcast'], self.clock()):
-                    raise ValueError('expired_before_publish')
-                if self.preflight:
-                    self.preflight(row)  # Native/file conflicts appearing during capture also block publication.
-                publishing = True
-                manifest = self.publisher.publish(row, output, expected)
-                self.completed(row, manifest)
+            else:
+                capture_workspace = Path(capture_workspace)
+                capture_root = (self.root / '.staging' / 'capture-work').resolve(strict=True)
+                if (capture_workspace.is_symlink() or not capture_workspace.resolve(strict=True).is_relative_to(capture_root)
+                        or output.resolve().parent != capture_workspace.resolve(strict=True)):
+                    raise ValueError('invalid_output')
+            audio_info(output, expected)
+            if eligibility(row['broadcast'], self.clock()):
+                raise ValueError('expired_before_publish')
+            if self.preflight:
+                self.preflight(row)  # Native/file conflicts appearing during capture also block publication.
+            if target_only:
+                require_runtime_capture(self.transport)
+            publishing = True
+            manifest = self.publisher.publish(row, output, expected)
+            self.completed(row, manifest)
 
-            try:
-                job_id(row['job_id'])
-                problem = eligibility(row['broadcast'], self.clock())
-                if problem:
-                    self.failed(row, 'expired' if problem == 'expired' else 'failed', problem)
-                    return row['job_id']
-                if self.preflight:
-                    self.preflight(row)
-                elif self.transport.kind != 'fixture':
-                    raise ValueError('preflight_required')
-                # Last gate check immediately before any real capture transport.
-                if self.transport.kind != 'fixture':
-                    require_runtime_capture(self.transport)
-                expected = (datetime.fromisoformat(row['end_at']) - datetime.fromisoformat(row['start_at'])).total_seconds()
-                capture_job = getattr(self.transport, 'capture_job', None)
-                if callable(capture_job):
-                    with capture_job(row['job_id']) as captured:
-                        publish_capture(captured.audio_path, captured.workspace)
-                else:
-                    work = Path(tempfile.mkdtemp(prefix='work-', dir=self.root / '.staging'))
-                    publish_capture(self.transport.run(row, work))
-            except Exception as error:
-                uncertain = publishing or isinstance(error, (subprocess.TimeoutExpired, FileExistsError))
-                self.failed(row, 'unknown' if uncertain else 'failed',
-                            getattr(error, 'code', 'worker_uncertain' if uncertain else 'worker_failed'))
-            finally:
-                if work is not None:
-                    shutil.rmtree(work)
-            return row['job_id']
+        try:
+            job_id(row['job_id'])
+            problem = eligibility(row['broadcast'], self.clock())
+            if problem:
+                self.failed(row, 'expired' if problem == 'expired' else 'failed', problem)
+                return row['job_id']
+            if self.preflight:
+                self.preflight(row)
+            elif self.transport.kind != 'fixture':
+                raise ValueError('preflight_required')
+            # Last gate check immediately before any real capture transport.
+            if target_only or self.transport.kind != 'fixture':
+                require_runtime_capture(self.transport)
+            expected = (datetime.fromisoformat(row['end_at']) - datetime.fromisoformat(row['start_at'])).total_seconds()
+            capture_job = getattr(self.transport, 'capture_job', None)
+            if callable(capture_job):
+                with capture_job(row['job_id']) as captured:
+                    publish_capture(captured.audio_path, captured.workspace)
+            else:
+                work = Path(tempfile.mkdtemp(prefix='work-', dir=self.root / '.staging'))
+                publish_capture(self.transport.run(row, work))
+        except Exception as error:
+            uncertain = publishing or isinstance(error, (subprocess.TimeoutExpired, FileExistsError))
+            self.failed(row, 'unknown' if uncertain else 'failed',
+                        getattr(error, 'code', 'worker_uncertain' if uncertain else 'worker_failed'))
+        finally:
+            if work is not None:
+                shutil.rmtree(work)
+        return row['job_id']
 
 
 def completed_assets(store, root, *, include_fixture=False):
