@@ -78,8 +78,9 @@ class TimefreeTests(unittest.TestCase):
         approval = {'broadcast_episode_id': request.broadcast_episode_id,
             'schedule_revision': request.schedule_revision, 'date': request.date.isoformat(),
             'approved': True, 'expires_at': (datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()}
+        (self.root/'recordings').mkdir(exist_ok=True)
         live = TimefreeService(self.store, self.guide.service, clock=lambda:self.now,
-            fixture=False, dispatcher=None)
+            fixture=False, dispatcher=None, acceptance_recording_roots=[self.root/'recordings'])
         with patch.dict(os.environ, {'RADIOFLIX_TIMEFREE_ENABLE_WRITES':'0'}):
             row = live.admit_for_acceptance(request, approval)
             self.assertEqual(row['state'], 'queued')

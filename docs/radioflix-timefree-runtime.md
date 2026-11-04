@@ -512,3 +512,10 @@ validation graph. Checkpoint 3 host fixture rehearsal and backend regression pas
 expects an existing queued job; admission-to-runner integration remains a
 production prerequisite and has not been exercised end to end. Never insert rows directly or enable the normal worker to work
 around this limitation.
+
+
+## Checkpoint 4 admission-to-runner integration
+
+The operator selects a public schedule entry by episode identity, schedule revision and broadcast date. `scripts/timefree-onejob-acceptance.sh --dry-run --episode-id ID --schedule-revision REV --date DATE` reuses shared schedule, eligibility, native reservation, normal recording inventory and Timefree duplicate guards. Preview opens the Timefree store read-only and creates no job or approval. `--execute` repeats preview, then the isolated admission CLI validates a short-lived target-bound admission file and calls `TimefreeService.admit_for_acceptance`; it never inserts SQL directly or dispatches the regular worker. It returns one queued `JOB_ID` which the host runner checks against the requested target before creating a separate capture approval bound to that ID.
+
+Admission and capture approvals have distinct JSON contracts and files. If admission succeeds but the response/launch is lost, the regular worker remains disabled and the job stays queued. The runner removes approvals, does not retry, and subsequent same-target execution fails closed on the existing job. Completed/failed targets are not automatically recaptured. Inside the worker DB lock, the acceptance path rejects another queued/running/unknown live job before changing the requested job. The fixture integration proves JOB-A completes while JOB-B remains unchanged; no production target was created or executed.

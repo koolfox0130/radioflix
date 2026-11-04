@@ -52,21 +52,36 @@ def main(argv=None, *, service_factory=None):
     parser.add_argument('--episode-id', required=True, type=lambda s: s if len(s) == 64 and all(c in '0123456789abcdef' for c in s) else parser.error('invalid episode id'))
     parser.add_argument('--schedule-revision', required=True, type=lambda s: s if len(s) == 64 and all(c in '0123456789abcdef' for c in s) else parser.error('invalid schedule revision'))
     parser.add_argument('--date', required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--execute', action='store_true')
     args = parser.parse_args(argv)
     try:
         request = TimefreeRequest(broadcast_episode_id=args.episode_id,
                                   schedule_revision=args.schedule_revision, date=args.date)
-        approval = read_approval(os.environ['RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE'], request)
         if service_factory is None:
             # The API's schedule/native validation graph is reused, while this
             # short-lived process owns a separately opened writable TimefreeStore.
             import app
-            store = TimefreeStore(os.environ['RADIOFLIX_DB_PATH'], read_only=False)
+            if os.getenv('RADIOFLIX_TIMEFREE_ENABLE_WRITES') != '0' or os.getenv('RFRIENDS_ENABLE_WRITES') != '0':
+                raise ValueError('admission_gates_not_off')
+            root = Path('/timefree')
+            info = root.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or root.resolve() != root
+                    or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (10001, 20000, 0o750)):
+                raise ValueError('publish_root_permissions')
+            store = TimefreeStore(os.environ['RADIOFLIX_DB_PATH'], read_only=not args.execute)
             service = TimefreeService(store, app.schedule_service, dispatcher=None)
         else:
             service = service_factory()
+        candidate = service.preview_for_acceptance(request)
+        if not args.execute:
+            print(json.dumps({'state': 'eligible', 'target': candidate, 'job_id': None}, sort_keys=True))
+            return 0
+        approval = read_approval(os.environ['RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE'], request)
         row = service.admit_for_acceptance(request, approval)
-        print(json.dumps({'job_id': row['job_id'], 'state': row['state']}, sort_keys=True))
+        print(json.dumps({'job_id': row['job_id'], 'state': row['state'], 'target': candidate,
+                          'job_count': len(service.store.list())}, sort_keys=True))
         return 0
     except Exception:
         print(json.dumps({'state': 'rejected'}, sort_keys=True))

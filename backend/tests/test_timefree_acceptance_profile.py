@@ -99,7 +99,7 @@ class FiveMinuteTests(unittest.TestCase):
             self.f.item.update(starts_at=a.isoformat(),ends_at=b.isoformat(),id=hashlib.sha256(
                 f"{self.f.item['station']}:{a.isoformat()}:{b.isoformat()}".encode()).hexdigest())
             self.rows.append(self.f.service.create(TimefreeRequest(**self.f.request())))
-        with self.f.store.transaction() as db: db.execute("UPDATE timefree_jobs SET execution_kind='live'")
+        with self.f.store.transaction() as db: db.execute("UPDATE timefree_jobs SET execution_kind='live' WHERE job_id=?", (self.rows[0]['job_id'],))
         self.approval=self.f.root/'approval.json'
         self.approval.write_text(json.dumps({'job_id':self.rows[0]['job_id'],'approved':True,
             'expires_at':(datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()}));self.approval.chmod(0o600)
@@ -159,6 +159,16 @@ class FiveMinuteTests(unittest.TestCase):
         self.stack(62)
         self.adapter.media_fetcher.check_segments(tuple(range(62)))
         with self.assertRaises(ValueError):self.adapter.media_fetcher.check_segments(tuple(range(63)))
+
+    def test_other_live_job_rejected_under_worker_lock(self):
+        self.stack()
+        with self.f.store.transaction() as db:
+            db.execute("UPDATE timefree_jobs SET execution_kind='live' WHERE job_id=?", (self.rows[1]['job_id'],))
+        before = self.f.store.list()
+        self.assertEqual(self.execute(), 2)
+        self.assertEqual(self.f.store.list(), before)
+        self.assertEqual(self.http.wire_requests, 0)
+        self.assertFalse(list(self.f.output.glob('*/audio.wav')))
 
     def test_capture_failure_cleanup(self):
         self.stack();self.responses[7]=HttpResponse(403)

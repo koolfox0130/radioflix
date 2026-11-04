@@ -176,6 +176,10 @@ class TimefreeWorker:
         self.publisher.prepare_root()
         self._reconcile(requested_id if target_only else None)
         with self.store.transaction() as db:
+            if target_only and self.transport.kind == 'live' and db.execute(
+                    "SELECT 1 FROM timefree_jobs WHERE execution_kind='live' "
+                    "AND state IN ('queued','running','unknown') AND job_id != ?", (requested_id,)).fetchone():
+                raise CaptureNotReady()
             candidate = db.execute("""SELECT * FROM timefree_jobs WHERE state='queued'
                 AND execution_kind=? AND (? IS NULL OR job_id=?) ORDER BY created_at,job_id LIMIT 1""",
                 (self.transport.kind, requested_id, requested_id)).fetchone()

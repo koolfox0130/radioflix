@@ -23,6 +23,14 @@ Acceptance-only closed profile:
 
 build済みacceptance image `radioflix-timefree-acceptance:<HEAD>` が必要。OCI revision label、backend/worker image revision、HEAD/local origin/mainが全一致し、専用service/runner/test codeがcommit済みであること。Dockerfileはffmpeg/ffprobeを含む。通常backend imageはrebuild/recreateしない。
 
+## Checkpoint 4: candidateからone-job実行
+
+公開番組表で明示された `broadcast_episode_id`、`schedule_revision`、放送日を使う。runnerの `--episode-id/--schedule-revision/--date` はsource APIのidentityを受け、DB keyやraw SQLをoperatorへ要求しない。例: `scripts/timefree-onejob-acceptance.sh --dry-run --episode-id <ID> --schedule-revision <REV> --date <YYYY-MM-DD>`。dry-runはofficial schedule/shared admission guards、duration、normal recording inventory、native reservation、既存Timefree jobを検査しjob/approval/capture/output/publicationを作らない。dedicated Compose/gate/image/revisionとproduction gate snapshotも確認する。
+
+実行時は同じ引数に `--execute`。同じshared serviceで再preflight後、backend/worker/native gateを0のままadmission-only processがtarget approvalを検証して1 queued jobを作る。返却 `job_id` とtarget identityを照合し、別のcapture approvalを作成する。acceptance start直前にexact target/count/active live job/preflightを再検査する。EOF/応答喪失などadmission後の結果不明は自動再試行しない。queued jobは通常worker disabledのまま残り、同target再実行はduplicateで停止する。terminal失敗も再captureしない。read-only照合とoperator reviewが必要。
+
+Fixture結合testはnetwork noneでJOB-Aだけをcompleted、JOB-Bは未変更にする。normal audio Range、approvalの用途分離、capture/validation/launch/recovery failure、segment/wire境界も検証する。host commandは `.codex/checkpoint4-host-test.sh`。
+
 ## 実行順
 
 1. 正式経路で作成された唯一のeligible queued jobのIDを控える。

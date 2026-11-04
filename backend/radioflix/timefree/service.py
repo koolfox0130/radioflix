@@ -34,12 +34,14 @@ def timefree_gate():
 
 class TimefreeService:
     # Test-only constructor injection. No env/request can select mock execution.
-    def __init__(self, store, schedule, *, clock=None, fixture=False, dispatcher=None, output_root=None):
+    def __init__(self, store, schedule, *, clock=None, fixture=False, dispatcher=None, output_root=None, acceptance_recording_roots=None):
         self.store, self.schedule, self.fixture = store, schedule, fixture
         self.clock = clock or (lambda: datetime.now(JST))
         self.writes_enabled = True  # Require existing Bearer auth even with all gates OFF.
         self.dispatcher = dispatcher
         self.output_root = output_root
+        self.acceptance_recording_roots = (acceptance_recording_roots if acceptance_recording_roots is not None
+                                           else ('/recordings', '/native-timefree'))
 
     def dispatch_pending(self):
         if not self.dispatcher or not timefree_gate():
@@ -102,7 +104,23 @@ class TimefreeService:
             raise RecordingError('approval_expired', '受入対象の承認期限が切れています。')
         return self._create(request, acceptance_approval=approval)
 
-    def _create(self, request, *, acceptance_approval):
+    def preview_for_acceptance(self, request):
+        """Same shared guards, no transaction, approval, dispatch or schema writes."""
+        return self._create(request, acceptance_approval=None, preview=True)
+
+    @staticmethod
+    def _acceptance_jobs(b, rows):
+        for old in rows:
+            if old['broadcast_episode_id'] == b.id:
+                # Recovery deliberately refuses even queued/failed/completed targets.
+                raise RecordingError('duplicate', '既存jobを確認してください。自動再実行しません。')
+            if old['execution_kind'] == 'live' and old['state'] in ('queued', 'running', 'unknown'):
+                raise RecordingError('acceptance_busy', '別の受入jobがあります。')
+            if old['station'] == b.station and old['start_at'] < b.ends_at.isoformat() and b.starts_at.isoformat() < old['end_at']:
+                raise RecordingError('conflict', '同じ時間帯の録音ジョブがあります。')
+
+    def _create(self, request, *, acceptance_approval, preview=False):
+        acceptance = preview or acceptance_approval is not None
         self.schedule.validate_dates([request.date])
         stations = {s['id'] for s in self.schedule.adapter.stations()}
         day = self.schedule.adapter.day(request.date, fresh=True)
@@ -121,16 +139,36 @@ class TimefreeService:
             raise RecordingError('native_unknown', '既存予約を確認できません。')
         if any(overlaps(b, n) for n in native):
             raise RecordingError('native_conflict', 'rfriends3で予約済みです。')
-        if not self.fixture and acceptance_approval is None and not timefree_gate():
+        if not self.fixture and not acceptance and not timefree_gate():
             raise RecordingError('writes_disabled', 'タイムフリー録音は無効です。')
         # Production transport is deliberately not installed by this offline milestone.
-        if not self.fixture and acceptance_approval is None and (not self.dispatcher or not self.dispatcher.ready()):
+        if not self.fixture and not acceptance and (not self.dispatcher or not self.dispatcher.ready()):
             raise RecordingError('worker_unavailable', '隔離workerの本番受入が未完了です。')
         kind = 'fixture' if self.fixture else 'live'
-        if acceptance_approval is not None and (b.ends_at - b.starts_at).total_seconds() > 300:
-            raise RecordingError('duration_limit', '受入対象の番組尺が上限を超えています。')
+        if acceptance:
+            import hashlib
+            from radioflix.timefree.preflight import RecordingInventory
+            canonical = hashlib.sha256(f'{b.station}:{b.starts_at.isoformat()}:{b.ends_at.isoformat()}'.encode()).hexdigest()
+            if b.id != canonical:
+                raise RecordingError('metadata_mismatch', '番組identityが一致しません。')
+            if not 0 < (b.ends_at - b.starts_at).total_seconds() <= 300:
+                raise RecordingError('duration_limit', '受入対象の番組尺が上限を超えています。')
+            RecordingInventory(self.acceptance_recording_roots).check(b)
+            for reservation in self.schedule.reservations.list():
+                if reservation['state'] not in ('cancelled', 'completed') and overlaps(b, Broadcast.model_validate(reservation['broadcast'])):
+                    raise RecordingError('native_conflict', '通常予約と競合しています。')
+            rows = self.store.list()
+            self._acceptance_jobs(b, rows)
+            if preview:
+                return {'broadcast_episode_id': b.id, 'schedule_revision': item['schedule_revision'],
+                        'date': request.date.isoformat(), 'station': b.station, 'title': b.title,
+                        'start': b.starts_at.isoformat(), 'end': b.ends_at.isoformat(),
+                        'duration': (b.ends_at - b.starts_at).total_seconds(),
+                        'existing_job_count': len(rows), 'duplicate': False, 'native_conflict': False}
         import json
         with self.store.transaction() as db:
+            if acceptance:
+                self._acceptance_jobs(b, [self.store.decode(r) for r in db.execute('SELECT * FROM timefree_jobs')])
             rows = db.execute('SELECT * FROM timefree_jobs' if acceptance_approval is not None else
                 "SELECT * FROM timefree_jobs WHERE state IN ('queued','running','completed','unknown')")
             for old in rows:

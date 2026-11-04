@@ -1,6 +1,6 @@
 """Host-only runner. Docker operations are limited to one ephemeral service.
 
-No production service restart/up/build, no gate changes, no job creation.
+No production service restart/up/build or gate changes. Jobs only via formal admission.
 """
 import argparse
 import json
@@ -123,6 +123,8 @@ def probe(image, ident, service, data, *, final=False):
 def cleanup(directory):
     directory = Path(directory)
     record = directory / 'owner.json'
+    (directory / 'admission.json').unlink(missing_ok=True)
+    (directory / 'approval.json').unlink(missing_ok=True)
     if not record.exists():
         return
     owner = json.loads(record.read_text())
@@ -178,7 +180,7 @@ def smoke():
     raise ValueError('smoke_normal_asset_missing')
 
 
-def run(ident, directory, *, execute=False):
+def execution_context(ident, directory):
     if not re.fullmatch('[a-f0-9]{32}', ident):
         raise ValueError('invalid_job_id')
     head = command(['git', 'rev-parse', 'HEAD']).stdout.strip()
@@ -203,6 +205,13 @@ def run(ident, directory, *, execute=False):
             raise ValueError('image_revision_mismatch')
     approval = Path(directory) / 'approval.json'
     base, env, service, data = render(image, ident, approval)
+    return image, base, env, service, data, before
+
+
+def run(ident, directory, *, execute=False):
+    image, base, env, service, data, before = execution_context(ident, directory)
+    head = image.rsplit(':', 1)[1]
+    approval = Path(directory) / 'approval.json'
     state = probe(image, ident, service, data)
     print(json.dumps({'dry_run': not execute, 'job': state, 'revision': head, 'image': image,
         'approval': str(approval), 'command': service['entrypoint'] + service['command'],
@@ -239,6 +248,176 @@ def run(ident, directory, *, execute=False):
     return 0
 
 
+def target_arguments(target):
+    from datetime import date
+    if set(target) != {'broadcast_episode_id', 'schedule_revision', 'date'}:
+        raise ValueError('invalid_target')
+    if any(not re.fullmatch('[a-f0-9]{64}', target[k]) for k in ('broadcast_episode_id', 'schedule_revision')):
+        raise ValueError('invalid_target')
+    date.fromisoformat(target['date'])
+    return ['--episode-id', target['broadcast_episode_id'], '--schedule-revision',
+            target['schedule_revision'], '--date', target['date']]
+
+
+def owner_record(directory):
+    record = {'name': 'radioflix-accept-' + uuid.uuid4().hex, 'nonce': uuid.uuid4().hex}
+    with (Path(directory) / 'owner.json').open('x') as stream:
+        json.dump(record, stream)
+    return record
+
+
+def owned_args(directory):
+    record = json.loads((Path(directory) / 'owner.json').read_text())
+    return ['--name', record['name'], '--label', OWNER + '=' + record['nonce']]
+
+
+def write_authorization(image, directory, filename, payload):
+    # Separate purposes, neither authorization can be interpreted as the other.
+    if filename not in ('admission.json', 'approval.json'):
+        raise ValueError('invalid_approval_name')
+    script = ("import os,json,sys; from datetime import datetime,timezone,timedelta; "
+              "data=json.loads(sys.argv[2]); data.update(approved=True,expires_at="
+              "(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat()); "
+              "f=os.open('/out/'+sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600); "
+              "os.fchown(f,10001,20000); s=os.fdopen(f,'w'); json.dump(data,s); s.close()")
+    docker('run', '--rm', '--pull', 'never', *owned_args(directory), '--network', 'none',
+           '--read-only', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN',
+           '--security-opt', 'no-new-privileges:true', '--mount', f'type=bind,src={directory},dst=/out',
+           '--entrypoint', 'python', image, '-c', script, filename, json.dumps(payload))
+
+
+def admission_call(image, target, service, data, directory, *, execute=False):
+    # Official schedule metadata uses HTTPS in future production. This function
+    # is replaced at the Docker boundary in offline fixtures, never env-selected.
+    args = ['run', '--rm', '--pull', 'never', '--network', 'bridge', '--read-only',
+            '--user', '10001:20000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+            '-e', 'PYTHONDONTWRITEBYTECODE=1', '-e', 'RFRIENDS_ENABLE_WRITES=0',
+            '-e', 'RADIOFLIX_TIMEFREE_ENABLE_WRITES=0', '-e', 'RADIOFLIX_TIMEFREE_BOOT_MODE=disabled',
+            '-e', 'RADIOFLIX_DB_PATH=/data/radioflix.sqlite3',
+            '-e', 'RADIOFLIX_NATIVE_RESERVATIONS_DIR=/native-reservations']
+    args += owned_args(directory)
+    for mount in service['volumes']:
+        if mount['target'] == '/approval.json':
+            continue
+        source = data['volumes'][mount['source']]['name'] if mount['type'] == 'volume' else mount['source']
+        mode = '' if execute and mount['target'] == '/data' else ',readonly'
+        args += ['--mount', f"type={mount['type']},src={source},dst={mount['target']}{mode}"]
+    if execute:
+        args += ['--mount', f'type=bind,src={directory}/admission.json,dst=/admission.json,readonly',
+                 '-e', 'RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE=/admission.json']
+    args += ['--entrypoint', 'python', image, '-m', 'radioflix.timefree.admission',
+             *target_arguments(target), '--execute' if execute else '--dry-run']
+    return json.loads(docker(*args, timeout=180).stdout)
+
+
+def check_handoff(result, target, expected_count):
+    if (not re.fullmatch('[a-f0-9]{32}', result.get('job_id', '')) or result.get('state') != 'queued'
+            or result.get('job_count') != expected_count
+            or any(result.get('target', {}).get(k) != v for k, v in target.items())):
+        raise ValueError('admission_handoff_invalid')
+    return result['job_id']
+
+
+def check_target_probe(state, ident, target, count):
+    if (state.get('job_id') != ident or state.get('state') != 'queued' or state.get('job_count') != count
+            or any(state.get(k) != target[k] for k in ('broadcast_episode_id', 'schedule_revision'))):
+        raise ValueError('exact_target_required')
+
+
+def run_target(target, directory, *, execute=False):
+    target_arguments(target)
+    directory = Path(directory)
+    owner_record(directory)  # metadata only, never an authorization
+    try:
+        return _run_target(target, directory, execute=execute)
+    finally:
+        if (directory / 'owner.json').exists():
+            cleanup(directory)
+            (directory / 'owner.json').unlink()
+
+
+def _run_target(target, directory, *, execute=False):
+    target_arguments(target)
+    directory = Path(directory)
+    image, base, env, service, data, before = execution_context('0'*32, directory)
+    preview = admission_call(image, target, service, data, directory)
+    candidate = preview.get('target', {})
+    if preview.get('state') != 'eligible' or any(candidate.get(k) != v for k, v in target.items()):
+        raise ValueError('candidate_invalid')
+    summary = {**candidate, 'dry_run': not execute, 'job_id': None, 'final_state': 'eligible',
+               'output_count': 0, 'published_count': 0, 'approval_cleanup': True,
+               'process_remaining': 0, 'range_check': 'NOT RUN', 'final_gates': 'NOT CHECKED',
+               'limits': {'program': 300, 'audio': 302, 'segments': 62, 'wire': 73},
+               'topology': {'user': service['user'], 'mounts': service['volumes'],
+                            'networks': service['networks'], 'image': image}}
+    if not execute:
+        if safety() != before:
+            raise ValueError('production_changed')
+        cleanup(directory)
+        (directory / 'owner.json').unlink()
+        summary['final_gates'] = 'OFF'
+        print(json.dumps(summary, sort_keys=True), flush=True)
+        return 0
+    result = None
+    code = 2
+    try:
+        # Repeat read-only checks immediately before admission, with no mutation.
+        if safety() != before or admission_call(image, target, service, data, directory) != preview:
+            raise ValueError('preflight_changed')
+        write_authorization(image, directory, 'admission.json', target)
+        summary['final_state'] = 'admission_unknown'
+        result = admission_call(image, target, service, data, directory, execute=True)
+        ident = check_handoff(result, target, candidate['existing_job_count'] + 1)
+        summary['job_id'] = ident
+        summary['final_state'] = 'queued'
+        (directory / 'admission.json').unlink(missing_ok=True)
+        base, env, service, data = render(image, ident, directory / 'approval.json')
+        check_target_probe(probe(image, ident, service, data), ident, target, result['job_count'])
+        if safety() != before:
+            raise ValueError('production_changed')
+        write_authorization(image, directory, 'approval.json', {'job_id': ident})
+        # Bind the job-only capture authorization to the already-validated target.
+        check_target_probe(probe(image, ident, service, data), ident, target, result['job_count'])
+        summary['final_state'] = 'unknown'
+        process = docker(*base, 'run', '--rm', '--no-deps', '--pull', 'never',
+                         *owned_args(directory), SERVICE, env=env, timeout=600, check=False)
+        final = probe(image, ident, service, data, final=True)
+        if (final.get('job_id') != ident or final.get('job_count') != result['job_count']
+                or any(final.get(k) != target[k] for k in ('broadcast_episode_id', 'schedule_revision'))):
+            raise ValueError('final_identity_changed')
+        summary.update(final_state=final['state'], output_count=final['output_count'],
+                       published_count=final['published_count'])
+        code = 0 if (process.returncode == 0 and final['state'] == 'completed'
+                     and final['output_count'] == final['published_count'] == 1) else 1
+    except Exception:
+        # Never infer completion or retry after an uncertain admission/launch response.
+        summary['error'] = 'acceptance_stopped_inspect_read_only'
+    finally:
+        try:
+            cleanup(directory)
+            summary['approval_cleanup'] = not any((directory / n).exists() for n in ('admission.json', 'approval.json'))
+            (directory / 'owner.json').unlink()
+        except Exception:
+            summary['approval_cleanup'] = False
+            summary['process_remaining'] = 'UNKNOWN'
+            code = 2
+        try:
+            smoke()
+            summary['range_check'] = 'PASS'
+        except Exception:
+            summary['range_check'] = 'FAIL'
+            code = 2
+        try:
+            if safety() != before:
+                raise ValueError('production_changed')
+            summary['final_gates'] = 'OFF'
+        except Exception:
+            summary['final_gates'] = 'UNVERIFIED'
+            code = 2
+        print(json.dumps(summary, sort_keys=True), flush=True)
+    return code
+
+
 def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt()
@@ -246,7 +425,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-dir')
     parser.add_argument('--cleanup')
-    parser.add_argument('--job')
+    parser.add_argument('--job', help='legacy exact-job path; never admits')
+    parser.add_argument('--episode-id')
+    parser.add_argument('--schedule-revision')
+    parser.add_argument('--date')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--execute', action='store_true')
@@ -255,9 +437,17 @@ def main():
         if args.cleanup:
             cleanup(args.cleanup)
             return 0
-        if not args.run_dir or not args.job:
-            parser.error('--job and shell runner required')
-        return run(args.job, args.run_dir, execute=args.execute)
+        if not args.run_dir:
+            parser.error('shell runner required')
+        if args.job:
+            if args.episode_id or args.schedule_revision or args.date:
+                parser.error('choose job or explicit target')
+            return run(args.job, args.run_dir, execute=args.execute)
+        if not all((args.episode_id, args.schedule_revision, args.date)):
+            parser.error('--episode-id, --schedule-revision and --date required')
+        return run_target({'broadcast_episode_id': args.episode_id,
+                           'schedule_revision': args.schedule_revision, 'date': args.date},
+                          args.run_dir, execute=args.execute)
     except Exception:
         print('onejob runner stopped; inspect job read-only; do not retry', file=sys.stderr)
         return 2

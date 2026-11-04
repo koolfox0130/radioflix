@@ -12,11 +12,11 @@ cleanup() {
     wait "$RUN_PID" || true
   fi
   if ! python3 "$ROOT/scripts/timefree_onejob_runner.py" --cleanup "$RUN_DIR"; then
-    rm -f -- "$RUN_DIR/approval.json"
+    rm -f -- "$RUN_DIR/approval.json" "$RUN_DIR/admission.json"
     printf 'Cleanup incomplete; preserve %s for read-only recovery\n' "$RUN_DIR" >&2
     exit 1
   fi
-  rm -f -- "$RUN_DIR/approval.json" "$RUN_DIR/owner.json"
+  rm -f -- "$RUN_DIR/approval.json" "$RUN_DIR/admission.json" "$RUN_DIR/owner.json"
   rmdir -- "$RUN_DIR" || rc=1
   exit "$rc"
 }

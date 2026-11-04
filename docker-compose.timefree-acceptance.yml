@@ -21,7 +21,6 @@ services:
       RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
       RFRIENDS_ENABLE_WRITES: "0"
       RADIOFLIX_TIMEFREE_ACCEPT_APPROVAL_FILE: /approval.json
-      RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE: /approval.json
     networks: [acceptance-egress]
     volumes:
       - type: volume
