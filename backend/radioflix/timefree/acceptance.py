@@ -6,7 +6,7 @@ import stat
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from radioflix.timefree.control import production_worker
+from radioflix.timefree.acceptance_profile import acceptance_worker
 from radioflix.timefree.publisher import job_id
 from radioflix.timefree.store import TimefreeStore
 
@@ -43,7 +43,7 @@ def approved_job(path, ident, *, now=None):
     return True
 
 
-def main(argv=None, *, worker_factory=production_worker):
+def main(argv=None, *, worker_factory=acceptance_worker):
     parser = argparse.ArgumentParser(description=(
         'Process only the explicit existing Timefree job, then exit. No loop, '
         'discovery, new jobs or automatic capture retry. Existing terminal jobs are read-only no-ops.'))
@@ -61,7 +61,7 @@ def main(argv=None, *, worker_factory=production_worker):
             state = row['state']
         else:
             approval = approved_job(os.environ['RADIOFLIX_TIMEFREE_ACCEPT_APPROVAL_FILE'], ident)
-            worker = worker_factory(bridge_approved=approval)
+            worker = worker_factory(ident=ident, bridge_approved=approval)
             # Fail closed if a caller accidentally constructed a different store.
             if worker.store.path.resolve() != Path(db_path).resolve():
                 raise ValueError('store_mismatch')

@@ -22,6 +22,9 @@ class HlsMediaSource:
         self.work_root = Path(work_root)
         self.offline_fixture = bool(getattr(transport, 'offline_fixture', False))
 
+    def check_segments(self, segments):
+        """Acceptance subclass tightens the manifest before any segment GET."""
+
     def download(self, playlist, auth, destination: Path, *, timeout_seconds=60) -> Path:
         destination = Path(destination)
         try:
@@ -59,6 +62,7 @@ class HlsMediaSource:
                 segments = self.playlist_parser.parse_hls(media_playlist.body, variant)
             elif b'#EXT-X-ENDLIST' not in master.body:
                 raise SourceFailure(SourceCode.MEDIA_FETCH_FAILED)
+            self.check_segments(segments)
             fd, name = tempfile.mkstemp(prefix='.source-', dir=destination.parent)
             temp = Path(name)
             total = 0

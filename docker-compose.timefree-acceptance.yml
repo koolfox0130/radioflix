@@ -1,0 +1,62 @@
+# Standalone project: never combine with the normal control service.
+services:
+  timefree-acceptance:
+    image: ${RADIOFLIX_ACCEPT_IMAGE:?immutable image required}
+    entrypoint: [python, -m, radioflix.timefree.acceptance]
+    command: [--accept-job, '${RADIOFLIX_ACCEPT_JOB:?exact job ID required}']
+    restart: "no"
+    user: "10001:20000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1
+    stop_grace_period: 10s
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      RADIOFLIX_DB_PATH: /data/radioflix.sqlite3
+      RADIOFLIX_TIMEFREE_ROOT: /timefree
+      RADIOFLIX_TIMEFREE_BOOT_MODE: enabled
+      RADIOFLIX_TIMEFREE_ENABLE_WRITES: "1"
+      RFRIENDS_ENABLE_WRITES: "0"
+      RADIOFLIX_TIMEFREE_ACCEPT_APPROVAL_FILE: /approval.json
+      RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE: /approval.json
+    networks: [acceptance-egress]
+    volumes:
+      - type: volume
+        source: database
+        target: /data
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radioflix-timefree
+        target: /timefree
+        bind: {create_host_path: false}
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/radiko
+        target: /recordings
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /volume1/@home/kool-fox/radiko_public/timefree
+        target: /native-timefree
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /home/kool-fox/Share/Radio/rfriends3/data/rsv
+        target: /native-reservations
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RADIOFLIX_ACCEPT_APPROVAL:?approval path required}
+        target: /approval.json
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs:
+      - "/tmp:size=16m,mode=1777,noexec,nosuid"
+volumes:
+  database:
+    external: true
+    name: radioflix_radioflix-reservations
+networks:
+  acceptance-egress:
+    driver: bridge

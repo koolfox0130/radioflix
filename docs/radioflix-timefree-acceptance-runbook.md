@@ -1,45 +1,42 @@
-# RadioFlix Timefree one-job acceptance runbook（未実行）
+# RadioFlix Timefree dedicated one-job acceptance runbook
 
-本書は本番での別途承認後にのみ使う。checkpoint 2のfixture検証では本書の手順を実行しない。現行capture上限は60秒、HTTP wire budgetはprocessあたり8、公開rootの所有者・Unix socketの実権限/backend→worker疎通は別途確認待ちである。候補番組が現行上限を超える場合は試験しない。上限・allowlist・timeoutを広げずに適合candidateが存在しない場合は中止し、先に別レビューを行う。
+実装と検証の手順。これ自体は本番実行の許可ではない。通常worker/controlをenabledにしない。実Radiko通信、本番job作成、本番gate変更、本番container recreateは別途承認がない限り行わない。
 
-## Preflightと候補選定
+## 構成と上限
 
-1. 作業ticketとoperatorを記録。録音中番組、既存予約を変更する必要がある状態、未知のinventory、socket不整合があればabort。
-2. `docker image inspect radioflix-backend --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'` とworker image inspectを読み取り専用で実施。revisionを承認対象Git HEADと一致させる。`unknown`・不一致はabort。
-3. `/volume1/@home/kool-fox/radiko_public/radioflix-timefree` が存在し、実際のworker UID 10001:GID 20000が必要なstaging/publish操作を行えるowner/modeであることを確認。worker mount RW、backend mount ROもinspect。変更はしない。所有者/mode不一致ならabort。
-4. `radioflix_radioflix-timefree-control` volume、worker側0770 directory/RW、socket 0660 owner 10001:20000、backend側ROをinspectし、backendからworker `/health` と `/status` をGET。接続失敗・異常payloadならabort。
-5. backend/workerの`RFRIENDS_ENABLE_WRITES=0`、`RADIOFLIX_TIMEFREE_ENABLE_WRITES=0`、worker boot disabledをinspectで確認。値が違えばabort。
-6. 放送局/開始終了/対象episodeをread-only schedule/catalogとnative予約・通常録音inventoryから選び、同一episode/局時間重複なし、native競合なし、inventory完全判明を記録。特殊・延長・再放送・不確かな番組は選ばない。おおむね5分の通常番組が望ましいが、現行60秒transcode制限に適合しないため、現状はその長さを受け入れられない。現行上限内で正式Timefree eligibilityにも適合する候補がなければ中止する。
-7. 通常予約/native reservationには触れない。Timefree job作成にはTimefree専用gateが必要な構成の場合、gate変更とjob作成は別途明示承認を得る。job作成後にDB/APIから32桁lowercase job IDを1回だけ取得し、operatorと二者確認する。IDを再選択/探索するループは禁止。
+`docker-compose.timefree-acceptance.yml` は単独projectで `timefree-acceptance` だけを起動する。通常workerは `network_mode: none`、disabled boot、両gate 0のまま。backendのTimefree gate 0、全rfriends gate 0。acceptance processは明示job ID、短命approval、concurrency 1の `accept_one()` で終了し、controller/loopを起動しない。DBと専用publish rootだけRW。normal recordings、native reservations/timefree、approvalはRO。UID:GID 10001:20000、rootfs RO、capabilities全drop、no-new-privileges、port/Docker socket/rfriends dependencyなし。egressはdedicated bridgeだが宛先制限はapplication allowlist/TLS validationで行う。
 
-## Approvalとone-job実行
+Acceptance-only closed profile:
 
-8. `RADIOFLIX_TIMEFREE_BOOT_MODE=enabled`、承認対象image revision一致、job ID、publish root/socket/preflight根拠を再確認する。gateはまだOFF。readyはこの時点では未確認と記録する。
-9. Timefree gateをONにできる別途明示承認を得た場合だけ、隔離workerの実行環境へ`RADIOFLIX_TIMEFREE_ENABLE_WRITES=1`を反映する。`RFRIENDS_ENABLE_WRITES=0`は維持する。設定反映は承認済みの運用手順で行い、このrunbook実施時もDocker recreate/restartを独断で行わない。
-10. acceptance moduleと同じproduction image、DB/root mount、boot mode、gate設定で次のread-only local readiness probeを実行する。probeは`bridge_approved=false`のままで外部HTTPを呼ばず、readyだけを表示する。`ready=false`、probe error、revision不一致ならcaptureへ進まずTimefree gateをOFFに戻す。
+- 番組metadata最大300秒。301秒はauth前拒否。
+- ADTS/WAV最大302秒。Publisherのscheduled duration許容差±2秒に対応。WAV validatorの通常の厳しい入力比許容差も維持。
+- PCM16 WAV最大116,033,536 bytes（302秒×96kHz×stereo×16bit+64KiB RIFF）。normal profileは従来60秒/32MiB。
+- segment最大62。根拠は `ceil(300秒/5秒)+2`。final media playlist全体を確認してから最初のsegment requestを行い、超過は拒否。
+- wire固定overhead最大7（player JS/auth1/auth2、official area XML、station stream XML、playlist/master/media最大2）+実segment数+共有retry/redirect余裕4。hard maximum 73。retryは各request最大3 attemptで同じbudgetを消費する。manifest判明後はbudgetを縮める。normal transport hard maximum 8のまま。
+- areaはauth2の実値をofficial station-area catalogと比較。configured areaは書き換えない。
 
-```sh
-python -c 'import json; from radioflix.timefree.control import production_worker; w=production_worker(); print(json.dumps({"ready": w.transport.ready, "bridge_approved": w.transport.bridge_approved, "read_only": w.read_only}))'
-```
+## 事前条件
 
-11. local readyがtrueであることを確認後、operatorが個別にbridge approvalする。対象job IDと期限を含むapproval JSONを安全なoperator専用pathに作る：`{"job_id":"<ID>","approved":true,"expires_at":"<UTC ISO timestamp>"}`。ownerは実行UID、mode 0600（または0400）、expiryは30分以内。token/credentialは含めず、既存secret/configファイルを流用しない。
-12. 同一UID・同一production image・上記DB/root/approval envで**ただ1回**起動：
+候補は終了済み・5分以内・通常の完全episodeで、inventory/native reservation/timefree重複なし、現在配信可能、既知host/area適合をread-onlyで確認する。候補・native inventory・publish rootに不明点があれば中止する。
 
-```sh
-python -m radioflix.timefree.acceptance --accept-job <確認済み32桁JOB_ID>
-```
+通常APIのPOSTは従来どおりbackend Timefree gateとdispatcher readinessを要求する。専用 `radioflix.timefree.admission` CLIはexplicit episode ID/revision/dateと10分以内のtarget-bound approvalを必須とし、APIと同じschedule/eligibility/native/duplicate検証を通して1件だけqueuedにする。dispatcherは呼ばず、backend gate=0のまま。approval pathは `RADIOFLIX_TIMEFREE_ADMISSION_APPROVAL_FILE` で指定する。Checkpoint 3のhost fixture rehearsalとbackend regressionはPASSした。admission CLIとone-job host runnerへの統合・そのE2E検証は未完了なので、本番ではまだ使用しない。DB直insert、guard迂回、通常worker enabled化で補わない。
 
-`RADIOFLIX_TIMEFREE_ACCEPT_APPROVAL_FILE`はapproval JSON pathを指す。job ID省略、別ID、再試行は不可。CLIはcontroller/server/loopを起動せず、指定job以外を選ばない。completed/failed/cancelled/expiredは終端で停止、既存completedは読み取りのみ。unknown/runningはproof-based reconcileだけ行い、再captureしない。実行中のabortはprocessへSIGINTし、自動再実行せずunknown recoveryを調査する。
+build済みacceptance image `radioflix-timefree-acceptance:<HEAD>` が必要。OCI revision label、backend/worker image revision、HEAD/local origin/mainが全一致し、専用service/runner/test codeがcommit済みであること。Dockerfileはffmpeg/ffprobeを含む。通常backend imageはrebuild/recreateしない。
 
-13. stdoutのjob ID/state、process exit code、DB stateを照合。API/UIで他jobをdispatchしない。2件目を確認するためのpoll loopを開始しない。
-14. terminalに達したら直ちにTimefree gateを0へ戻し、実際のruntime値を再inspect。bridge approval fileを安全に削除し、実データやcredentialを含まないaudit結果だけを記録。
+## 実行順
 
-## 成果物確認・停止条件・復旧
+1. 正式経路で作成された唯一のeligible queued jobのIDを控える。
+2. Termiusからrepo rootで `scripts/timefree-onejob-acceptance.sh --dry-run --job <JOB_ID>` を実行する。これはgit/image/gates/socket/mount/revision、exact job、duplicate/native/file conflicts、duration/budget、renderされたservice/command/UID/network/mountを検証する。network-noneのprobeだけで外部HTTP・mutation・approval・capture・publishは行わない。
+3. dry-runが成功し、改めて明示許可された場合だけ同じscriptに `--execute` を渡す。runnerはprivate tempに10分approvalを一度作り、dedicated serviceだけを `compose run --rm --no-deps` で起動する。backend/worker/gateway/frontendを起動・再作成しない。
+4. terminal state/exit codeを照合。finally/trapでapproval、所有label一致container、所有labelかつ孤立した専用Compose networkを削除し、元のproduction container IDs/start times/gatesを再確認する。frontend/backend/programs/normal audio Range smokeを行う。
+5. 成功時はread-only probeでjob/manifest/audio整合・asset countを確認。失敗時はoperator再試行禁止。unknown/intent/stagingは証拠を保持し、read-only recovery reviewへ渡す。
 
-15. read-only DB/manifest/audioで同一jobのpublication intent、manifest hash/size/duration、atomic outputを照合。重複・余剰file・manifest不一致は成功にしない。
-16. 別途承認されたread-only backend API GETとHTTP Rangeでassetを確認。Range 206、Content-Rangeとbyte countが一致しない場合はabort。今回のrunbookを使ったplayback requestは別の承認がなければ行わない。
-17. `running`/`unknown`、intentのみ、outputのみ、hash不一致の場合は再録音しない。`reconcile`/`Publisher.verify`で所有intent・manifest・音声が全て一致する時だけcompleted recoveryを許す。確証がなければunknownのまま停止し、staging/outputを手作業で昇格/削除しない。
-18. Abort条件：revision不一致/unknown、gate不明/ON、approval期限/ID違い、ready false、bridge未確認、native/file conflict、socket/health異常、未承認host、HTTP上限/timeout/60秒超過、duplicate/no-overwrite拒否、processが他jobへ進む兆候。gate OFFを確認して直ちに停止。
-19. Rollbackはgate OFF、approval撤去、状態/intent/manifestをread-only確認すること。container recreate/restart、job削除、予約変更、publish手動修正をrollback手順へ含めない。状態不明なら保持して運用レビューへ渡す。
+## abort / cleanup
 
-Docker確認は`docker ps/inspect/image inspect/compose config/compose ps/logs --tail`等のREAD ONLYに限る。runbook実施時にもdocker restart/recreate/up/down/buildは禁止。checkpoint 2完了や本書は実施許可ではない。
+runner/dry-runはHEAD同期不一致、revision不一致、gate不正、通常worker enabled/network有効、socket/mount異常、複数job、job非queued、duplicate/native conflict、inventory不明、publish root既存物、approval/render不整合で停止する。captureはHTTP/segment/wire/duration/validator/no-overwrite/preflight異常で終端し、retryしない。
+
+SIGINT/SIGTERM trapは実行runnerを停止して所有containerとapprovalを片付ける。SIGKILL・host電源断ではtrapは動かない。記録されたjob ID/owner labelだけを使ってread-only確認後、該当containerを停止しapprovalを削除する。job/outputを手作業で変更せず再captureしない。Compose networkはproject/service labelと接続containerなしを確認した場合だけ削除する。cleanup検証に失敗した時は成功扱いにせずtemp owner記録を保持する。
+
+この実装時点で、fixture/network-noneによる5分E2E、異常segment拒否、runner mock、Compose renderは検証済み。Docker daemon不在の環境では実container rehearsalを省略したと明記する。本番1番組の実行は別工程。
+
+Checkpoint 3 host結果・skip理由・warningと残課題は [検証記録](radioflix-timefree-checkpoint3.md) を参照。

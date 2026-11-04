@@ -1,0 +1,14 @@
+FROM python:3.14-slim
+WORKDIR /app
+RUN command -v bash && bash --version >/dev/null
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-test.txt /app/requirements-test.txt
+RUN pip install --no-cache-dir -r /app/requirements-test.txt
+COPY app.py /app/app.py
+COPY radioflix /app/radioflix
+RUN chmod -R a+rX /app/radioflix /app/app.py
+COPY tests /app/tests
+ENV PYTHONPATH=/app/tests PYTHONDONTWRITEBYTECODE=1
+USER 10001:20000
+ENTRYPOINT ["python", "-m", "unittest"]

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from radioflix.timefree.capture.errors import CaptureFailure
+from radioflix.timefree.capture.limits import NORMAL, ACCEPTANCE, checked
 
 
 MAX_INPUTS = 3
@@ -36,7 +37,8 @@ class FfmpegArgvTranscoder:
 
     def __init__(self, executable: Path, *, workspace: Path,
                  preflight_allowlisted_path: Path | None = None,
-                 ffprobe_executable: Path | None = None):
+                 ffprobe_executable: Path | None = None, _profile=NORMAL):
+        self._profile = checked(_profile)
         self.executable = Path(executable)
         self.workspace = Path(workspace)
         self.ffprobe_executable = (Path(ffprobe_executable) if ffprobe_executable is not None
@@ -100,7 +102,7 @@ class FfmpegArgvTranscoder:
                 or not 1 <= segment_count <= MAX_INPUTS
                 or isinstance(expected_duration, bool)
                 or not isinstance(expected_duration, (int, float))
-                or not 0 < expected_duration <= MAX_INPUT_DURATION_SECONDS
+                or not 0 < expected_duration <= self._profile.audio_seconds
                 or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
                 or not 1 <= timeout_seconds <= 30):
             raise CaptureFailure('ffmpeg_preflight_invalid')
@@ -183,7 +185,7 @@ class FfmpegArgvTranscoder:
                 if identity in identities:
                     raise CaptureFailure('media_invalid')
                 identities.add(identity)
-                core_rate, duration = _adts_duration(path)
+                core_rate, duration = _adts_duration(path, _profile=self._profile)
                 decoded_rate, _channels = _probe_aac_sample_rate(
                     self._ffprobe_executable(), path, workspace=root,
                 )
@@ -201,7 +203,7 @@ class FfmpegArgvTranscoder:
             sample_rate = decoded_rate
             durations.append(duration)
         expected = sum(durations)
-        if expected <= 0 or expected > MAX_INPUT_DURATION_SECONDS:
+        if expected <= 0 or expected > self._profile.audio_seconds:
             raise CaptureFailure('media_duration_invalid')
 
         executable = self._executable()
@@ -225,8 +227,8 @@ class FfmpegArgvTranscoder:
                 raise CaptureFailure('ffmpeg_stderr_too_large')
             if result.returncode != 0:
                 raise CaptureFailure('ffmpeg_failed')
-            _validate_wav(temp, expected, len(sources), sample_rate)
-            if temp.stat().st_size > MAX_OUTPUT_BYTES:
+            _validate_wav(temp, expected, len(sources), sample_rate, _profile=self._profile)
+            if temp.stat().st_size > self._profile.output_bytes:
                 raise CaptureFailure('ffmpeg_output_too_large')
             os.link(temp, target)
         except subprocess.TimeoutExpired:
@@ -241,7 +243,7 @@ class FfmpegArgvTranscoder:
             temp.unlink(missing_ok=True)
 
 
-def _adts_duration(path: Path) -> tuple[int, float]:
+def _adts_duration(path: Path, *, _profile=NORMAL) -> tuple[int, float]:
     data = path.read_bytes()
     offset = 0
     if data.startswith(b'ID3'):
@@ -269,7 +271,7 @@ def _adts_duration(path: Path) -> tuple[int, float]:
     if sample_rate is None or total_samples == 0:
         raise CaptureFailure('media_invalid')
     duration = total_samples / sample_rate
-    if duration > MAX_INPUT_DURATION_SECONDS:
+    if duration > checked(_profile).audio_seconds:
         raise CaptureFailure('media_duration_invalid')
     return sample_rate, duration
 
@@ -319,16 +321,17 @@ def _probe_aac_sample_rate(ffprobe: Path, path: Path, *, workspace: Path,
         raise CaptureFailure('media_probe_invalid') from None
 
 
-def _validate_wav(path: Path, expected_duration: float, segment_count: int, sample_rate: int) -> None:
-    reason, info = _wav_diagnostic(path, sample_rate)
+def _validate_wav(path: Path, expected_duration: float, segment_count: int, sample_rate: int, *, _profile=NORMAL) -> None:
+    reason, info = _wav_diagnostic(path, sample_rate, _profile=_profile)
     if reason:
         raise CaptureFailure('ffmpeg_output_invalid')
     tolerance = max(0.15, segment_count * 2048 / sample_rate)
-    if abs(info['duration'] - expected_duration) > tolerance:
+    if ((_profile is ACCEPTANCE and info['duration'] > ACCEPTANCE.audio_seconds)
+            or abs(info['duration'] - expected_duration) > tolerance):
         raise CaptureFailure('ffmpeg_duration_mismatch')
 
 
-def _wav_diagnostic(path: Path, expected_sample_rate: int | None = None) -> tuple[str | None, dict]:
+def _wav_diagnostic(path: Path, expected_sample_rate: int | None = None, *, _profile=NORMAL) -> tuple[str | None, dict]:
     """Return a non-sensitive validator reason and PCM properties.
 
     RIFF chunks may appear between fmt and data, and metadata chunks may follow
@@ -340,7 +343,7 @@ def _wav_diagnostic(path: Path, expected_sample_rate: int | None = None) -> tupl
         if path.is_symlink() or not path.is_file():
             return 'INVALID_FILE', empty
         size = path.stat().st_size
-        if size > MAX_OUTPUT_BYTES or size < 12:
+        if size > checked(_profile).output_bytes or size < 12:
             return 'SIZE_MISMATCH', empty
         with path.open('rb') as stream:
             header = stream.read(12)

@@ -1,71 +1,61 @@
 # RadioFlix Development Status
 
 ## Last updated
-2026-11-03 16:16:32 JST
+2026-11-05 05:36:29 JST
 
 ## Current task
-Phase 4 checkpoint 2: explicit one-job Timefree acceptance mode, fixture rehearsal, recovery/regression tests, and unexecuted production runbook.
+Checkpoint 3 host PASS結果レビュー、論理変更限定commit/push（今回ユーザー明示承認済み）。本番操作禁止。
 
 ## Current phase
-All checkpoint 2 completion conditions are met. One logical implementation commit and push are authorized by the user; commit targets are being audited.
+precommit
 
 ## Status
 ready_to_commit
 
 ## Completed
-- Read current repo state and preserved all pre-existing modified/untracked files. HEAD and origin/main are both `156f673d129bbd6cf5520c58a8224e22748478fc`.
-- Confirmed ordinary `run_once()` allows omitted IDs, reconciles all eligible rows, and can be called repeatedly by the daemon controller; it cannot provide the mandatory-ID/process-exit contract.
-- Added `TimefreeWorker.accept_one(id)` with explicit target validation, terminal-state no-op, shared boot/gate/ready/bridge guard, exclusive worker lock, target-only recovery/dispatch, pre-capture and pre-publish checks, and no retry/poll loop.
-- Added `python -m radioflix.timefree.acceptance --accept-job <JOB_ID>`. The job-bound expiring operator approval file does not override boot mode, Timefree gate, local readiness, native/duplicate checks, validation, or no-overwrite publication.
-- Added two-job fixture E2E, guard/failure/no-overwrite/native conflict tests, child-process exit, and recovery boundary tests. `JOB-B` remains queued with only its original queued event.
-- Added the unexecuted production acceptance runbook and checkpoint 2 contract note.
-- No production Docker or data operation, gate/ready/bridge change, Timefree job, native reservation, publish, or Radiko/production endpoint request.
+- host resultとrun.UIkXmmCv/full.log確認。build/render/topology/5分E2E/boundaries/runner/backend full/catalog/API/cleanup全PASS、exit 0。
+- backend 457件: pass 446、fail 0、error 0、skip 11。既存PHP CLI不足10件、隔離PHP/source未設定1件。docs/radioflix-timefree-checkpoint3.mdに全skip名を記録。
+- sqlite ResourceWarning 1374件（直前runも1362件）。既存種別、新規リーク断定不可。deprecation warningあり。
+- 全tracked diffと対象new filesをレビュー。git diff --check PASS。通常disabled/gates設計維持、300/302/62/73、capture attempt1/job retry0、normal60秒/8wire、second job不変確認。
+- scope: acceptance profile/CLI/probe/shared admission、tests、専用Dockerfiles/Compose、2 runner scripts、関連docs、今回progress snapshot。
+- 除外: .codex全体、backend/Dockerfile既存permission変更、source-api過去診断、frontend/backup/archive、以前のhistory等。既存差分保持。
 
 ## In progress
-- Final stage/status audit. If only the explicitly targeted checkpoint 2 files are staged, create and push the checkpoint 2 implementation commit. Then record the actual commit/push result and snapshot history.
+指定scopeのcommit/pushと同期確認。
 
 ## Next actions
-1. Stage only worker/acceptance/test/runbook/checkpoint2 docs/latest and this checkpoint's history snapshot; exclude prior user modifications, backups, and runtime audit artifacts.
-2. Commit and push the single checkpoint 2 implementation commit.
-3. Update latest status with the actual commit ID/push result, save the final history snapshot, and verify the final status.
+1. commit/push後にHEAD/local origin/main/remote main一致を確認。
+2. admission CLI→runner統合・approval引き渡しの未完了を解消/検証。本番job直insertやgate ONで補わない。
+3. 次turnの承認範囲で最新revisionのbackend/acceptance image再同期、read-only preflight、runner dry-run。
+4. 本番1番組acceptanceは別途明示承認後のみ。warningsは追跡する。
 
 ## Blockers / Issues
-- One expected skip remains: legacy PHP Timefree integration requires an absent pinned PHP source fixture. PHP driver tests ran separately and passed.
-- This environment's Starlette/AnyIO blocking portal stalled. A temporary `/tmp` in-process ASGI test shim was used for fixture API tests, and the existing UDS test passed outside the sandbox inside a no-network namespace. No test shim or dependency change is in the repository.
-- The runbook is documentation only. Prior production migration findings (image revision, publish-root ownership/mode, actual socket permissions and backend-to-worker reachability) still require a separate production re-audit before any live trial.
+- host rehearsalはPASS。本番admission→runner統合未完了は本番実行前の課題。
+- ResourceWarningの新規増分/漏洩元は未判定。明確な新規リークの証拠なし、今回commit blockerにしない。
+- NAS Share非host UID bind制約はtest-only /tmp copyで回避。
+- sandbox通常shellのremote DNS不可。承認済み昇格readでremote main=base HEADを確認。
 
 ## Files changed
-Checkpoint 2:
-- `backend/radioflix/timefree/worker.py`: target-filtered reconciliation, one-job worker path, repeated shared guard.
-- `backend/radioflix/timefree/acceptance.py`: explicit CLI, ID-bound expiring approval, terminal no-op, sanitized output.
-- `backend/tests/test_timefree_acceptance.py`: fixture E2E, negative matrix, no-recapture recovery, process-exit checks.
-- `docs/radioflix-timefree-acceptance-runbook.md`: unexecuted production preflight, approval, abort, validation and recovery sequence.
-- `docs/radioflix-timefree-checkpoint2.md`: contracts and bounded retry/recovery behavior.
-- `docs/dev-log/latest.md` and checkpoint 2 history snapshot.
-
-Pre-existing changes retained and excluded: `backend/Dockerfile`, `docs/radioflix-timefree-source-api.md`, `.codex/`, NAS audit artifacts, backups, archived files, frontend backups and old history snapshots.
+今回commit対象の詳細はdocs/radioflix-timefree-checkpoint3.mdとcommit file listを参照。.codex/artifactは除外。post-commit最新ログ更新はNAS引き継ぎとして残す。
 
 ## Git state
-Branch `main`; HEAD=origin/main=`156f673d129bbd6cf5520c58a8224e22748478fc`. No checkpoint 2 commit/push yet. Stage is empty. Existing pre-session modified/untracked files are preserved. No reset/restore.
+- branch main; HEAD 4046b6f6020e983e9f84fcf81c2175027e5b22f0; local origin/main 4046b6f6020e983e9f84fcf81c2175027e5b22f0。
+- phase precommit; commit/pushは今回明示承認済み、通常本番操作は未承認。
+- historical dirty/untrackedは保持。reset/restore/cleanなし。
 
 ## Tests
-- Backend full discovery: 436 tests; 435 pass, fail 0, error 0, skip 1. Run with `unshare -Urn`; test process had no network namespace egress.
-- Acceptance tests: 16 PASS, including E2E, process exit, 5 interruption/recovery boundaries, guard/failure/native/duplicate matrix.
-- Capture/guard/source/transcoder/bootstrap/inventory/area plus acceptance: 180 PASS.
-- Catalog/API/reservations/schedule/Timefree/runtime/gate: 246 PASS, skip 1.
-- PHP rfriends driver: 10 PASS. Legacy pinned-source integration remains the one skip.
-- Import smoke: 15 modules PASS. Python AST syntax: 3 changed Python files PASS. `git diff --check` PASS.
-- Frontend tests not run; no frontend code changed.
-- Test-only FastAPI/Starlette/HTTPX dependencies and an in-process ASGI shim live under `/tmp/rf-cp2`, not in the repo.
+- host full 457 / PASS446 / FAIL0 / ERROR0 / SKIP11。runner8件PASS、5分fixture E2E PASS。
+- 今回git diff --check、syntax/staticレビューPASS。Docker再実行なし。
+- 前回local FastAPI未導入による未実行はhost full PASSで補完。ただしadmission CLIとhost runnerの結合E2Eは未実装/未検証。
 
 ## Runtime / Safety
-Production state changes 0; Docker commands 0; Timefree/RFRIENDS gates and production readiness/bridge unchanged; production job/publish/native reservation changes 0. Radiko auth, station XML, playlist, media, segment and other production endpoint requests 0. Fixture acceptance and full backend discovery ran in a fresh network namespace with temporary DB/output and fake capture ports. Temporary test packages were fetched into `/tmp` before the network-isolated suite; no project or production dependency was changed. Fixture test used `RFRIENDS_ENABLE_WRITES=0` and Timefree-only gate admission.
+- production changes0、Radiko runtime通信0（host result確認）。今回Docker/production rebuild/recreate/job/gate/approval/capture/publish/rfriends3操作0。
+- backend/worker/RFRIENDS gate0、worker disabled維持の設計。実稼働値/active weekly/reservationは今回再inspectせず未確認。
+- acceptance program300s/audio302s/segments62/wire73/capture attempt1 retry0/job retry0。normal60s/8wire不変。
 
 ## Important decisions
-- One invocation has no automatic job retry: at most one capture attempt. Existing transport retries remain bounded to three attempts/request and eight wire requests/process. Uncertain state uses proof-based recovery and never automatically recaptures.
-- `completed`, `failed`, `cancelled`, and `expired` terminate. Completed is read-only no-op. Running/unknown only reconciles the specified ID and then exits.
-- The required capture guard is boot enabled AND `RADIOFLIX_TIMEFREE_ENABLE_WRITES=1` AND ready AND bridge approval. `RFRIENDS_ENABLE_WRITES` is not part of this guard.
-- A fixture pass is not live approval. The runbook's image/root/socket/health checks and production migration re-audit remain a separate prerequisite.
+- real Composeはhost、unitはfake境界。fixture runtimeはnetwork none、UID10001:20000、rootfs RO、caps drop、no-new-privileges、scripts RO。
+- 本turnはcommit/pushまで。本番反映は次turn、別承認。
 
 ## Recovery instructions
-Read this log and inspect actual Git status before continuing. The checkpoint 2 code and test set is complete; current HEAD should be checkpoint 1 commit `156f673d129bbd6cf5520c58a8224e22748478fc` until the authorized commit is created. Stage only listed checkpoint 2 files, do not include unrelated user changes or audit artifacts, then commit/push. Do not run the production runbook, live capture, or production Docker operations.
+AGENTS.md/当ログ/Git状態を照合。historyやartifactを無差別にstageしない。対象commit以外のdirtyは保持。host PASSと未完了の本番統合を混同しない。

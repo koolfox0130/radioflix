@@ -14,7 +14,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from radioflix.api.timefree import timefree_router, TimefreeRequest
-from radioflix.schemas.reservations import JST
+from radioflix.schemas.reservations import JST, RecordingError
 from radioflix.timefree.service import TimefreeService, eligibility, deadline
 from radioflix.timefree.store import TimefreeStore
 from radioflix.timefree.worker import TimefreeWorker, FixturePHP, completed_assets, safe_file
@@ -62,6 +62,44 @@ class TimefreeTests(unittest.TestCase):
         self.assertEqual(row['broadcast'],self.item)
         self.assertEqual(self.client.get('/api/timefree/jobs/'+row['job_id']).json(),row)
         self.assertEqual(self.client.get('/api/timefree/jobs').headers['cache-control'],'no-store')
+
+    def test_acceptance_admission_uses_shared_guards_with_backend_gate_off(self):
+        from datetime import timezone
+        # This tests shared admission guards, with a valid five-minute target.
+        start = datetime.fromisoformat(self.item['starts_at'])
+        end = start + timedelta(seconds=300)
+        self.item['ends_at'] = end.isoformat()
+        self.item['id'] = hashlib.sha256(
+            f"{self.item['station']}:{start.isoformat()}:{end.isoformat()}".encode()).hexdigest()
+        self.item.pop('schedule_revision')
+        self.item['schedule_revision'] = hashlib.sha256(
+            json.dumps(self.item, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        request = TimefreeRequest(**self.request())
+        approval = {'broadcast_episode_id': request.broadcast_episode_id,
+            'schedule_revision': request.schedule_revision, 'date': request.date.isoformat(),
+            'approved': True, 'expires_at': (datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()}
+        live = TimefreeService(self.store, self.guide.service, clock=lambda:self.now,
+            fixture=False, dispatcher=None)
+        with patch.dict(os.environ, {'RADIOFLIX_TIMEFREE_ENABLE_WRITES':'0'}):
+            row = live.admit_for_acceptance(request, approval)
+            self.assertEqual(row['state'], 'queued')
+            self.assertEqual(row['execution_kind'], 'live')
+            self.assertEqual(len(self.store.list()), 1)
+            with self.assertRaises(RecordingError): live.admit_for_acceptance(request, approval)
+        self.assertEqual(len(self.store.list()), 1)
+
+    def test_acceptance_admission_rejects_unbound_or_expired_approval(self):
+        from datetime import timezone
+        request = TimefreeRequest(**self.request())
+        base = {'broadcast_episode_id': request.broadcast_episode_id,
+            'schedule_revision': request.schedule_revision, 'date': request.date.isoformat(),
+            'approved': True, 'expires_at': (datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()}
+        live = TimefreeService(self.store, self.guide.service, clock=lambda:self.now)
+        altered = {**base, 'broadcast_episode_id':'0'*64}
+        with self.assertRaises(RecordingError): live.admit_for_acceptance(request, altered)
+        expired = {**base, 'expires_at':(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat()}
+        with self.assertRaises(RecordingError): live.admit_for_acceptance(request, expired)
+        self.assertEqual(self.store.list(), [])
 
     def test_future_rejected(self):
         self.item['starts_at']=(self.now+timedelta(hours=1)).isoformat();self.item['ends_at']=(self.now+timedelta(hours=2)).isoformat()

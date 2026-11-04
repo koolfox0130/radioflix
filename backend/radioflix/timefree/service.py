@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 
 from radioflix.schemas.reservations import Broadcast, JST, RecordingError
 from radioflix.services.schedule_service import overlaps, native_uncertain
@@ -74,6 +74,35 @@ class TimefreeService:
         return row
 
     def create(self, request):
+        return self._create(request, acceptance_approval=None)
+
+    def admit_for_acceptance(self, request, approval):
+        """Queue one explicitly approved live target without enabling API writes.
+
+        The approval is target-bound and short-lived. The same schedule,
+        eligibility, native-conflict and database admission logic used by the
+        API remains authoritative; this path never dispatches a worker.
+        """
+        expected = {
+            'broadcast_episode_id': request.broadcast_episode_id,
+            'schedule_revision': request.schedule_revision,
+            'date': request.date.isoformat(),
+        }
+        if (not isinstance(approval, dict) or set(approval) != {
+                'broadcast_episode_id', 'schedule_revision', 'date', 'approved', 'expires_at'}
+                or approval.get('approved') is not True
+                or any(approval.get(k) != v for k, v in expected.items())):
+            raise RecordingError('approval_invalid', '受入対象の承認を確認できません。')
+        try:
+            expires = datetime.fromisoformat(approval['expires_at'])
+        except (TypeError, ValueError):
+            raise RecordingError('approval_invalid', '受入対象の承認を確認できません。') from None
+        now = datetime.now(timezone.utc)
+        if expires.tzinfo is None or not now < expires <= now + timedelta(minutes=10):
+            raise RecordingError('approval_expired', '受入対象の承認期限が切れています。')
+        return self._create(request, acceptance_approval=approval)
+
+    def _create(self, request, *, acceptance_approval):
         self.schedule.validate_dates([request.date])
         stations = {s['id'] for s in self.schedule.adapter.stations()}
         day = self.schedule.adapter.day(request.date, fresh=True)
@@ -92,16 +121,22 @@ class TimefreeService:
             raise RecordingError('native_unknown', '既存予約を確認できません。')
         if any(overlaps(b, n) for n in native):
             raise RecordingError('native_conflict', 'rfriends3で予約済みです。')
-        if not self.fixture and not timefree_gate():
+        if not self.fixture and acceptance_approval is None and not timefree_gate():
             raise RecordingError('writes_disabled', 'タイムフリー録音は無効です。')
         # Production transport is deliberately not installed by this offline milestone.
-        if not self.fixture and (not self.dispatcher or not self.dispatcher.ready()):
+        if not self.fixture and acceptance_approval is None and (not self.dispatcher or not self.dispatcher.ready()):
             raise RecordingError('worker_unavailable', '隔離workerの本番受入が未完了です。')
         kind = 'fixture' if self.fixture else 'live'
+        if acceptance_approval is not None and (b.ends_at - b.starts_at).total_seconds() > 300:
+            raise RecordingError('duration_limit', '受入対象の番組尺が上限を超えています。')
         import json
         with self.store.transaction() as db:
-            for old in db.execute("SELECT * FROM timefree_jobs WHERE state IN ('queued','running','completed','unknown')"):
+            rows = db.execute('SELECT * FROM timefree_jobs' if acceptance_approval is not None else
+                "SELECT * FROM timefree_jobs WHERE state IN ('queued','running','completed','unknown')")
+            for old in rows:
                 if old['broadcast_episode_id'] == b.id:
+                    if acceptance_approval is not None:
+                        raise RecordingError('duplicate', '同じ番組のタイムフリーjobがあります。')
                     return self.store.decode(old)
                 if old['station'] == b.station and old['start_at'] < b.ends_at.isoformat() and b.starts_at.isoformat() < old['end_at']:
                     raise RecordingError('conflict', '同じ時間帯の録音ジョブがあります。')
@@ -112,7 +147,8 @@ class TimefreeService:
                 (job_id, b.id, b.station, b.title, b.starts_at.isoformat(), b.ends_at.isoformat(), now,
                  json.dumps(item, ensure_ascii=False), deadline(b).isoformat(), kind, json.dumps(sorted(stations))))
             self.store.event(db, job_id, 'queued', now)
-        self.dispatch_pending()
+        if acceptance_approval is None:
+            self.dispatch_pending()
         return self.get(job_id)
 
     def cancel(self, job_id):

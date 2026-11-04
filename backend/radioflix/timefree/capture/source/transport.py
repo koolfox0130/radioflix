@@ -97,6 +97,9 @@ class ProductionHttpTransport:
         self.wire_requests = 0
         self.policy = policy
 
+    def _wire_limit(self):
+        return min(self.max_wire_requests, 8)
+
     @staticmethod
     def _public_addresses(host: str) -> tuple[str, ...]:
         try:
@@ -170,7 +173,7 @@ class ProductionHttpTransport:
         for attempt in range(self.policy.max_attempts):
             redirect_count = 0
             while True:
-                if self.wire_requests >= self.max_wire_requests:
+                if self.wire_requests >= self._wire_limit():
                     raise SourceNotReady()
                 validate_url(current_url)
                 current_host = urlsplit(current_url).hostname

@@ -355,7 +355,7 @@ The existing `/data` volume is technically visible to backend and a future worke
 
 ### Disabled read-only boot contract
 
-`RADIOFLIX_TIMEFREE_BOOT_MODE` defaults to `disabled`; unknown values also select disabled. `ProductionBootstrap` is still `ready=false` and `bridge_approved=false`, so even an explicitly requested enabled mode cannot make `can_write` true today. The worker store is read-only unless boot mode is explicitly `enabled`, the Timefree write gate is on, and the capture bridge is ready and approved. `RFRIENDS_ENABLE_WRITES` does not participate in this decision.
+`RADIOFLIX_TIMEFREE_BOOT_MODE` defaults to `disabled`; unknown values also select disabled. `control.production_worker()` now constructs `ProductionCaptureAdapter`; local preflight determines readiness, while daemon bridge approval remains false. `ProductionBootstrap` is the historical PHP boundary, not the current factory. The worker store is read-only unless boot mode is explicitly `enabled`, the Timefree write gate is on, and the capture bridge is ready and approved. `RFRIENDS_ENABLE_WRITES` does not participate in this decision.
 
 When the Timefree gate is OFF, startup may validate static configuration, open the existing SQLite file through read-only queries, create/bind the dedicated Unix socket, and serve health/status. It does not run schema creation/migration, reconcile, job scans requiring mutation, flock creation, staging/publish setup, manifest writes, external Radiko requests, or ffmpeg. `TimefreeStore.transaction()` rejects before creating a parent or opening SQLite. `worker.reconcile()` and `run_once()` return before touching files; controller startup/tick skip reconcile, and dispatch/cancel fail with `writes_disabled` before mutation. The worker process receives the DB and publish root as read-only mounts in disabled Compose, providing an OS-level second barrier. `RFRIENDS_ENABLE_WRITES` is not consulted by this Timefree path.
 
@@ -426,3 +426,89 @@ docker run --rm --pull never --network none --read-only --cap-drop ALL \
 Before `up`, verify the rendered backend image equals `radioflix-backend:$SHA`, the revision label matches, and package/route smoke prints `phase4_image_ok`. Review backend ports/networks/DB/recording/secrets mounts and disabled gates in rendered config. Then use the explicitly reviewed backend-only `up -d --no-deps backend` command. Do not use `up --build` against a multi-service project because it may build unrelated services. Keep the previous production image ID/tag for rollback; never remove it as part of deployment.
 
 For isolated validation, build a separate tag such as `radioflix-backend:phase4-validation-<shortsha>` from the same `backend/` context and Dockerfile with `RADIOFLIX_GIT_SHA=<fullsha>`. Run package/import/OpenAPI checks and the disabled fixture backend↔worker UDS test with network none, fixture DB/root, backend socket RO and worker socket RW. The production tag and containers must remain untouched.
+
+## Dedicated one-job acceptance (current implementation, 2026-11-03)
+
+This section supersedes historical statements above about the active capture factory,
+readiness, and temporarily enabling the control daemon. Historical diagnostic results
+remain history, not evidence that the current acceptance image has been deployed.
+
+`control.production_worker()` still constructs the normal `ProductionCaptureAdapter`
+with the existing 60-second input/metadata limit and one shared 8-wire transport.
+It does not import/select the acceptance factory. Disabled startup is read-only;
+no local ffmpeg preflight, schema migration, recovery mutation or HTTP occurs.
+`ProductionBootstrap` is the older fail-closed PHP boundary, not that factory.
+
+`python -m radioflix.timefree.acceptance --accept-job ID` selects the separate
+`acceptance_profile.acceptance_worker` after checking the short-lived, exact-job
+approval file. It has no Controller, UDS server, scheduler or dispatch loop.
+Both entrypoints share TimefreeWorker's DB lock, target-only acceptance execution,
+Preflight, Publisher and no-overwrite/recovery contracts. The acceptance factory
+is not selectable through an environment variable or the control HTTP API.
+
+The closed acceptance profile permits metadata intervals up to **300 seconds**.
+ADTS input and decoded WAV are capped at **302 seconds**, matching the existing
+Publisher's +/-2-second schedule tolerance. Transcoder input-to-WAV tolerance
+remains `max(0.15, input_count * 2048 / sample_rate)`; it is not widened.
+Metadata 301 seconds is rejected before auth. WAV byte capacity is separately
+bounded at `302 * 96000 * 2 * 2 + 65536 = 116033536` bytes: maximum supported
+sample rate, stereo PCM16, plus 64 KiB for RIFF overhead. Normal output remains
+32 MiB. Input bytes, aggregate downloaded bytes (2 MiB), response size, allowlist,
+connect/read timeout and subprocess timeout are unchanged; unusual bitrate/codec
+programs can still fail closed.
+
+Wire accounting covers every actual HTTP attempt including retries and redirects:
+player JS/auth1/auth2 (3), official station-area catalog (1), stream XML (1),
+master/media playlists (up to 2), then all segments. Fixed overhead is **7**.
+Expected segment allowance is `min(62, ceil(metadata_seconds / 5) + 2)`;
+the five-second estimate and two boundary segments cover the historical 61-segment
+five-minute observation without allowing arbitrarily fine segmentation.
+The shared retry/redirect reserve is **4**, not four per segment. Initial budget
+is `7 + expected_segments + 4`, with absolute maximum **73**. Once the final
+media playlist is parsed, the budget can only shrink to `7 + actual_count + 4`.
+The entire manifest count is checked before the first segment GET; a 63-segment
+playlist is rejected. Transport attempts remain at most three per request, capture
+attempts one, job retries zero. No retry or redirect can exceed the shared budget.
+The authenticator checks the station's official area against the actual auth area;
+configured area is not rewritten.
+
+`docker-compose.timefree-acceptance.yml` is a standalone project. It starts only
+`timefree-acceptance`, UID:GID 10001:20000, restart=no, read-only rootfs, dropped
+capabilities, no-new-privileges, no ports, no Docker socket, no rfriends dependency.
+Only its DB volume and Timefree publish root are RW. Normal/native roots and the
+approval file are RO. A dedicated bridge network supplies outbound connectivity;
+the exact host/IP/TLS checks remain in the HTTP transport. This is an application
+allowlist, not a claim of kernel-level destination filtering. The ordinary worker
+keeps network=none, disabled boot and gate 0. Backend and gateway gates stay 0.
+Backend's pre-existing application DB RW mount is not changed by this topology;
+its Timefree store and publish mount remain read-only while the gate is OFF.
+
+The dedicated image uses `backend/Dockerfile.timefree-acceptance`, including
+ffmpeg/ffprobe; the normal backend image does not provide that runtime. Build/tag
+and revision verification must precede future production acceptance, separately
+from this implementation. No normal container is recreated by the runner.
+
+The shell runner `scripts/timefree-onejob-acceptance.sh` wraps a bounded host
+orchestrator. Default/dry-run renders and validates the standalone service, checks
+HEAD/local origin/main and all three image revisions, verifies normal gates,
+network/mount/socket state, then runs an exact-job read-only probe with network=none.
+It creates no job, approval or publication in dry-run. Execute creates a 10-minute
+approval owned by 10001, mode 0600, only in a private temporary directory; an
+isolated root helper has only CHOWN and that temporary mount. The acceptance
+container receives only the approval file RO. Finally/traps remove the owned
+container and approval, recheck original container identities/gates, and perform
+local normal HTTP/Range smoke. Cleanup failure is a failure, and preserves the
+ownership record for recovery instead of claiming success. SIGKILL/host power loss
+cannot be handled by a shell trap: inspect and stop the exact labeled container,
+remove approval, inspect DB/publication evidence, and never recapture automatically.
+
+**Admission path:** `radioflix.timefree.admission` accepts one explicit episode ID,
+schedule revision and date with a short-lived owner/mode checked target approval.
+It reuses `TimefreeService` schedule, eligibility, native-conflict and duplicate
+checks, writes one queued live row, and does not dispatch. The backend API gate
+remains OFF. The dedicated acceptance image includes the app schedule/native
+validation graph. Checkpoint 3 host fixture rehearsal and backend regression passed (457 tests,
+446 passed, 11 existing PHP-dependent skips). The current shell runner still
+expects an existing queued job; admission-to-runner integration remains a
+production prerequisite and has not been exercised end to end. Never insert rows directly or enable the normal worker to work
+around this limitation.
